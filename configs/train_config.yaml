@@ -1,0 +1,30 @@
+# -------------------------------------------------------
+# LithoPy ML Training Configuration
+# Consumed by: scripts/train_model.py
+# -------------------------------------------------------
+
+device: "cuda"          # "cuda" or "cpu"  (auto-falls-back to cpu)
+
+# Model
+model_type: "conv"      # "conv" | "simple"
+latent_dim: 64
+
+# Training
+epochs: 50
+batch_size: 32
+learning_rate: 0.001
+num_workers: 2
+val_split: 0.15
+augment: true
+seed: 42
+
+# Inference
+anomaly_border_px: 16   # pixels cropped from edges for anomaly scoring
+top_frac: 0.01          # fraction of top-error pixels used in score
+n_sigma: 4.0            # threshold = clean_mean + n_sigma * clean_std
+
+# Paths
+data_dir: "data/raw_synthetic/clean"
+output_dir: "models"
+results_dir: "results"
+

@@ -1,0 +1,11 @@
+parameter,value,unit,description
+Bow,-16.756780701954746,µm,Signed centre deflection of median surface
+Warp,41.02930893850915,µm,PV of median surface about reference plane
+TTV,1.3178196805153313,µm,Total thickness variation (front − back)
+Sori,41.23637447749507,µm,Front-surface range about reference plane
+SFQR max,843.0407364786894,nm,Worst of 89 complete sites
+SFQR mean,511.1938038503437,nm,Mean site front least-squares range
+SFQR p99,758.6893272191818,nm,99th percentile site flatness
+Thickness,774.992310985742,µm,Mean wafer thickness
+Site size,25.0,mm,Exposure field edge length
+Edge exclusion,3.0,mm,Fixed quality area margin

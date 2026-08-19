@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litho-sim"
+version = "2.0.0"
+description = "A modular photolithography simulation engine for process window analysis and aerial image computation."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "LithoPy Contributors" }]
+requires-python = ">=3.10"
+keywords = ["lithography", "semiconductor", "simulation", "process window", "PROLITH", "EUV", "ArF"]
+
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+viz = [
+    "plotly>=6.0",        # interactive 3-D stack viewer
+    "streamlit>=1.33",    # interactive app
+    "scikit-image>=0.21", # optional: marching-cubes meshes for freestanding spacers
+]
+ml = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "scikit-image>=0.21",
+    "Pillow>=10.0",
+    "pyyaml>=6.0",
+]
+app = [
+    "PySide6>=6.5",       # native desktop front end (python -m litho_sim.app)
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.5",
+]
+
+[project.scripts]
+litho-sim = "litho_sim.cli:main"
+litho-sim-app = "litho_sim.app.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    # Rigorous mask solves are seconds each, not milliseconds. They are part of
+    # the suite — `pytest -m "not slow"` when iterating.
+    "slow: takes seconds rather than milliseconds (FDTD near-field solves)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = [
+    # Physics code follows the optics literature: NA, W, I, E-field names are
+    # the domain vocabulary, not style violations.
+    "N803",
+    "N806",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Runnable scripts bootstrap sys.path before importing litho_sim.
+"scripts/*" = ["E402"]
+# Dill A/B/C and Mack Rmax/Rmin/Mth are the resist-model parameter names as
+# published; mask_side_NA is the optics term. Renaming them would hide the
+# literature they quote.
+"src/litho_sim/core/config.py" = ["N802", "N815"]
+# Test names may embed notation (NA); test doubles mirror external APIs
+# (plotly's Mesh3d) name-for-name.
+"tests/*" = ["N802"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+

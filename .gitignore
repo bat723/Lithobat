@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local-only Obsidian vault — never publish (see docs/Publishing and Privacy.md)
+docs/
+
+# Generated ML artifacts (regenerable via scripts/generate_data.py / litho_sim.ml)
+dataset/
+inference_results*/
+checkpoints/
+
+# Local reference material (copyrighted, keep out of history)
+/*.pdf
+
+# Vault backup tarballs
+docs-backup-*.tar.gz
+
+# Device preset cache (rebuildable: File > Load device, or scripts/show_device.py)
+presets/
+
+# Obsidian config — the vault lives at docs/ (itself ignored); a stray root
+# vault once put .obsidian/ here and it must never be committed.
+.obsidian/

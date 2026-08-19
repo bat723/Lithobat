@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wafer-metrology-engine"
+version = "1.1.0"
+description = "Wafer surface metrology and warpage characterisation for silicon-photonics packaging: bow/warp/TTV/SFQR, Zernike decomposition, phase-measuring deflectometry and interferometry, defect extraction, Gage R&R, and a warp-to-coupling-loss capstone."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "LithoPy Contributors" }]
+requires-python = ">=3.11"
+keywords = [
+    "wafer",
+    "metrology",
+    "flatness",
+    "warp",
+    "bow",
+    "TTV",
+    "SFQR",
+    "SEMI M1",
+    "zernike",
+    "interferometry",
+    "silicon photonics",
+    "gage r&r",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# scikit-image supplies unwrap_phase, label and regionprops.  The package falls
+# back to bundled scipy implementations when it is absent -- see
+# wafer_metrology.interferometry.unwrap_phase_2d and
+# wafer_metrology.defects.region_properties.
+image = [
+    "scikit-image>=0.22",
+]
+# Only needed for the optional convolutional-autoencoder defect path.
+ml = [
+    "torch>=2.0",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.5",
+]
+
+[project.scripts]
+wafer-metrology = "wafer_metrology.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
