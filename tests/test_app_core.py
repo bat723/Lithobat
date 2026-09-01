@@ -728,8 +728,9 @@ def test_the_window_builds_and_renders_offscreen():
         result = compute_imaging(win.model)
 
         # The stack is the substrate the rest of the flow acts on, so it
-        # leads, and the app opens on it.
-        assert win.tabs.count() == 5
+        # leads, and the app opens on it. Six tabs: stack, mask, expose,
+        # develop, process window, stochastics.
+        assert win.tabs.count() == 6
         assert [win.tabs.tabText(i) for i in range(5)] == [
             "Wafer Stack", "Mask", "Expose", "Develop", "Process Window",
         ]

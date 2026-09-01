@@ -152,6 +152,12 @@ SPECS: tuple[ParamSpec, ...] = (
               group="Mask", target="mask",
               stage="mask",
               help="Width of the bright (transmitting) feature."),
+    ParamSpec("mask_type", "Mask type", "choice", "binary",
+              choices=("binary", "att-psm"),
+              group="Mask", target="mask", stage="mask",
+              help="binary = chrome on glass. att-psm = attenuated phase "
+                   "shift: dark regions leak 6% at 180°, whose destructive "
+                   "interference steepens the image edge."),
 
     # -- mask 3-D -----------------------------------------------------
     # Everything here is stage="mask": it changes the diffraction spectrum, so
@@ -208,8 +214,8 @@ SPECS: tuple[ParamSpec, ...] = (
               stage="aerial",
               help="Inner factor; non-zero makes the source annular."),
     ParamSpec("source_type", "Illumination", "choice", "conventional",
-              choices=("conventional", "annular", "dipole", "quadrupole",
-                       "quasar", "cquad"),
+              choices=("conventional", "annular", "monopole", "dipole",
+                       "quadrupole", "quasar", "cquad"),
               group="Optics", target="optics",
               stage="aerial",
               help="Source shape."),
@@ -253,11 +259,23 @@ SPECS: tuple[ParamSpec, ...] = (
                    "makes threshold comparable across polarisations."),
 
     # -- resist -------------------------------------------------------
+    ParamSpec("resist_model", "Resist model", "choice", "threshold",
+              choices=("threshold", "mack", "car"),
+              group="Resist", target="resist",
+              stage="resist",
+              help="threshold cuts the diffused aerial image at Threshold. "
+                   "mack runs Dill exposure → PEB → Mack dissolution. car "
+                   "runs the chemically amplified chain — acid generation, "
+                   "quencher reaction–diffusion, catalytic deprotection — "
+                   "and develops the protected fraction. mack and car read "
+                   "Develop threshold and Develop time, not Threshold."),
     ParamSpec("threshold", "Threshold", "float", 0.30, 0.05, 0.95, 0.01,
               group="Resist", target="resist",
               stage="resist",
-              help="Clearing threshold. THE CD calibration knob — the "
-                   "default prints well under the drawn CD at 1:1."),
+              help="Clearing threshold for the threshold model. THE CD "
+                   "calibration knob — the default prints well under the "
+                   "drawn CD at 1:1. The mack and car models cut on PAC "
+                   "via Develop threshold instead."),
     ParamSpec("dose", "Dose", "float", 1.00, 0.20, 3.00, 0.05,
               group="Resist", target="resist",
               stage="scale",
@@ -274,6 +292,99 @@ SPECS: tuple[ParamSpec, ...] = (
               group="Resist", target="resist",
               stage="resist",
               help="Which part of the resist survives development."),
+    # Read by the 2-D mack/car models *and* the 3-D develop step — which is
+    # why they live in the always-visible Resist section with stage="resist"
+    # (the same dual life `tone` has always led), not in the 3-D-only
+    # Profile group they started in.
+    ParamSpec("mack_Mth", "Develop threshold", "float", 0.50, 0.05, 0.95, 0.01,
+              group="Resist", target="resist",
+              stage="resist",
+              help="Where development cuts in *chemistry* space — PAC after "
+                   "the bake (mack), protected fraction (car), and the same "
+                   "for the 3-D depth path. A different physical quantity "
+                   "from the intensity Threshold above."),
+    ParamSpec("develop_time", "Develop time", "float", 5.0, 0.5, 30.0, 0.5, "s",
+              group="Resist", target="resist",
+              stage="resist",
+              help="How long the developer runs, for every finite-rate model "
+                   "(mack, car, 3-D front). The scale that matters is "
+                   "multiples of the just-clearing time — 1 s for a 100 nm "
+                   "film at Rmax 100 nm/s — so the default is a 5x "
+                   "over-develop."),
+
+    # -- chemistry ----------------------------------------------------
+    # The CAR block: read by the car model, the Stochastics tab, and (for
+    # the first two) the mack model. All stage="resist" — none of them can
+    # touch the Abbe sum.
+    ParamSpec("dose_nominal", "Dose to clear", "float", 30.0, 5.0, 100.0, 1.0,
+              "mJ/cm²", group="Chemistry", target="resist",
+              stage="resist",
+              help="Real exposure dose at relative dose 1.0. The Dill "
+                   "chemistry needs absolute units; the dimensionless Dose "
+                   "slider multiplies this."),
+    ParamSpec("dill_C", "Dill C", "float", 0.04, 0.005, 0.20, 0.005,
+              "cm²/mJ", group="Chemistry", target="resist",
+              stage="resist",
+              help="Exposure rate constant — how fast PAC bleaches (mack) "
+                   "or PAG converts to acid (car) per unit dose."),
+    ParamSpec("pag_density", "PAG loading", "float", 0.20, 0.02, 1.00, 0.02,
+              "nm⁻³", 1e27, group="Chemistry", target="resist",
+              stage="resist",
+              help="Photoacid-generator density. Sets the molecule count "
+                   "per voxel — the knob that decides how loud the "
+                   "Stochastics tab is. The deterministic car model never "
+                   "reads it."),
+    ParamSpec("quencher_ratio", "Quencher / PAG", "float", 0.10, 0.0, 0.5,
+              0.01, group="Chemistry", target="resist",
+              stage="resist",
+              help="Base loading as a fraction of PAG. Annihilates "
+                   "sub-threshold acid during the bake — where CAR contrast "
+                   "comes from. car model only."),
+    ParamSpec("bake_time", "PEB time", "float", 60.0, 5.0, 120.0, 5.0, "s",
+              group="Chemistry", target="resist",
+              stage="resist",
+              help="Reaction–diffusion bake duration (car). The mack model "
+                   "bakes with the PEB diffusion length instead."),
+    ParamSpec("D_acid", "Acid D", "float", 4.0, 0.1, 20.0, 0.1, "nm²/s",
+              1e-18, group="Chemistry", target="resist",
+              stage="resist",
+              help="Acid diffusivity during the car bake. √(2Dt) is the "
+                   "diffusion length — 22 nm at the defaults."),
+    ParamSpec("k_quench", "Quench rate", "float", 20.0, 0.0, 100.0, 1.0,
+              "1/s", group="Chemistry", target="resist",
+              stage="resist",
+              help="Acid–base neutralisation rate, per unit concentration "
+                   "in PAG₀ units. The term that turns the bake from a blur "
+                   "into a threshold."),
+    ParamSpec("k_amp", "Deprotection", "float", 0.05, 0.0, 0.50, 0.01, "1/s",
+              group="Chemistry", target="resist",
+              stage="resist",
+              help="Catalytic deprotection rate per unit acid. k × acid × "
+                   "bake time of a few is a well-amplified resist."),
+    ParamSpec("electron_blur_sigma", "e⁻ blur", "float", 0.0, 0.0, 10.0, 0.5,
+              "nm", 1e-9, group="Chemistry", target="resist",
+              stage="resist",
+              help="Photoelectron cascade range — where EUV acid actually "
+                   "appears, a few nm from the absorption site. 0 for DUV; "
+                   "~4 nm at 13.5 nm."),
+
+    # -- stochastic (cosmetic) ----------------------------------------
+    ParamSpec("use_stochastic", "Edge roughness", "bool", False,
+              group="Stochastic", target="resist",
+              stage="resist",
+              help="Stamp correlated line-edge roughness onto the developed "
+                   "image. Cosmetic — a statistical texture with the σ and ξ "
+                   "below. Physical noise from photon and molecule counting "
+                   "is the Stochastics tab."),
+    ParamSpec("stochastic_sigma", "LER σ", "float", 1.0, 0.2, 10.0, 0.2,
+              "nm", 1e-9, group="Stochastic", target="resist",
+              stage="resist",
+              help="1-σ edge displacement of the cosmetic roughness."),
+    ParamSpec("stochastic_corr_length", "LER ξ", "float", 25.0, 5.0, 100.0,
+              5.0, "nm", 1e-9, group="Stochastic", target="resist",
+              stage="resist",
+              help="Correlation length along the edge — what makes the "
+                   "result look like a SEM image rather than static."),
 
     # -- grid ---------------------------------------------------------
     ParamSpec("n_pixels", "Grid", "int", 128, 32, 256, 32,
@@ -326,21 +437,6 @@ SPECS: tuple[ParamSpec, ...] = (
               help="Dissolution rate at the very top surface as a fraction "
                    "of bulk. Needs develop_model='front' to show a T-top: a "
                    "slow cap alone just shifts a ray-marched profile down."),
-    ParamSpec("mack_Mth", "Develop threshold", "float", 0.50, 0.05, 0.95, 0.01,
-              group="Profile", target="resist",
-              stage="profile3d",
-              help="The 3-D counterpart of the 2-D Threshold slider, and a "
-                   "different physical quantity: this cuts on PAC "
-                   "concentration after the bake, not on aerial intensity. "
-                   "The depth-resolved path never reads the 2-D threshold."),
-    ParamSpec("develop_time", "Develop time", "float", 5.0, 0.5, 30.0, 0.5, "s",
-              group="Profile", target="resist",
-              stage="profile3d",
-              help="How long the developer runs. Read by 'mack' and 'front', "
-                   "not by 'threshold', which has no time in it at all. The "
-                   "scale that matters is multiples of the just-clearing "
-                   "time — 1 s for a 100 nm film at Rmax 100 nm/s — and the "
-                   "5 s default is a 5x over-develop."),
     ParamSpec("standing_waves", "Standing waves", "bool", False,
               group="Profile", target="resist",
               stage="profile3d",
@@ -385,11 +481,14 @@ SPECS_BY_KEY: dict[str, ParamSpec] = {s.key: s for s in SPECS}
 
 #: Section order for the control panel.
 GROUPS: tuple[str, ...] = (
-    "Mask", "Optics", "Vector", "Mask 3-D", "Resist", "Grid", "Profile",
+    "Mask", "Optics", "Vector", "Mask 3-D", "Resist", "Chemistry",
+    "Stochastic", "Grid", "Profile",
 )
 
 
-def mask_model_availability(wavelength: float, pattern: str) -> dict[str, str | None]:
+def mask_model_availability(
+    wavelength: float, pattern: str, mask_type: str = "binary"
+) -> dict[str, str | None]:
     """Which mask models can run here, and why the others cannot.
 
     Two of the three thick-mask models are conditional on settings that live in
@@ -413,17 +512,30 @@ def mask_model_availability(wavelength: float, pattern: str) -> dict[str, str | 
     """
     euv = abs(wavelength - 13.5e-9) < 1e-11
     one_dimensional = pattern in ("lines and spaces", "isolated line")
+    if not one_dimensional:
+        fdtd_reason = (
+            f"'{pattern}' varies in both x and y. The solver is 2.5-D — it "
+            f"handles a cross-section through line/space geometry. Use lines "
+            f"and spaces, or an isolated line."
+        )
+    elif mask_type != "binary":
+        # The FDTD topography is chrome/absorber on a blank — a partially
+        # transmitting phase-shifting film is a different material stack the
+        # solver does not model.
+        fdtd_reason = (
+            "Only for binary masks. The solved topography is an opaque "
+            "absorber; an attenuated-PSM film transmits and phase-shifts, "
+            "which the geometry builder does not represent."
+        )
+    else:
+        fdtd_reason = None
     return {
         "thin": None,
         "multilayer": None if euv else (
             "Only at EUV (13.5 nm). It models the Bragg mirror an EUV mask "
             "reflects from; a transmissive DUV mask has no mirror."
         ),
-        "fdtd": None if one_dimensional else (
-            f"'{pattern}' varies in both x and y. The solver is 2.5-D — it "
-            f"handles a cross-section through line/space geometry. Use lines "
-            f"and spaces, or an isolated line."
-        ),
+        "fdtd": fdtd_reason,
     }
 
 #: Sections shown only when the Develop tab is in 3-D mode.
@@ -591,6 +703,22 @@ class ParameterModel:
             develop_time=d["develop_time"],
             inhibition_depth=d["inhibition_depth"],
             inhibition_rate=d["inhibition_rate"],
+            # The chemistry block — read by the mack/car models and the
+            # Stochastics tab. Carried always, same rule as above: leaving
+            # a field out silently pins it to the dataclass default and the
+            # control does nothing.
+            dose_nominal=d["dose_nominal"],
+            dill_C=d["dill_C"],
+            pag_density=d["pag_density"],
+            quencher_ratio=d["quencher_ratio"],
+            bake_time=d["bake_time"],
+            D_acid=d["D_acid"],
+            k_quench=d["k_quench"],
+            k_amp=d["k_amp"],
+            electron_blur_sigma=d["electron_blur_sigma"],
+            use_stochastic=d["use_stochastic"],
+            stochastic_sigma=d["stochastic_sigma"],
+            stochastic_corr_length=d["stochastic_corr_length"],
         )
 
     @property
@@ -600,6 +728,11 @@ class ParameterModel:
     @property
     def develop_model(self) -> str:
         return str(self.values["develop_model"])
+
+    @property
+    def resist_model(self) -> str:
+        """The 2-D development model — threshold, mack, or car."""
+        return str(self.values["resist_model"])
 
     @property
     def dose(self) -> float:

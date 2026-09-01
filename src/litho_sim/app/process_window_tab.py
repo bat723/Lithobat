@@ -197,9 +197,13 @@ class ProcessWindowTab(QtWidgets.QWidget):
             units += 1
         if self.meef_check.isChecked() and self.meef_check.isEnabled():
             units += 2
-        self.cost_label.setText(
-            f"≈ {per_image * units / 1000.0:.1f} s  ({units} images)"
-        )
+        text = f"≈ {per_image * units / 1000.0:.1f} s  ({units} images)"
+        if self.model.resist_model == "car":
+            # The quencher makes the bake non-linear in dose, so the dose
+            # axis stops being a free rescale — every grid point pays for a
+            # reaction–diffusion bake on top of the imaging above.
+            text += "  + a car bake per grid point"
+        self.cost_label.setText(text)
 
     def _set_editing_enabled(self, on: bool) -> None:
         for w in (self.focus_range, self.n_focus, self.dose_range,

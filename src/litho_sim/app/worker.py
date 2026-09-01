@@ -33,6 +33,8 @@ class Worker(QtCore.QObject):
     done_device = QtCore.Signal(object)  # (name, stack, label)
     done_fem = QtCore.Signal(object)     # ProcessWindowResult, or None on failure
     progress_fem = QtCore.Signal(int, int)
+    done_stoch = QtCore.Signal(object)   # StochResult, or None on failure
+    progress_stoch = QtCore.Signal(int, int)
     failed = QtCore.Signal(str)
 
     def __init__(self, parent=None):
@@ -115,5 +117,25 @@ class Worker(QtCore.QObject):
         # Always emitted, even on failure — the tab's controls are disabled
         # for exactly the window this signal closes.
         self.done_fem.emit(result)
+
+    @QtCore.Slot(object)
+    def run_stoch(self, req) -> None:
+        """A Monte-Carlo printing batch — one car develop per trial.
+
+        Not through ``self.pipeline`` for the FEM's reason: the batch reuses
+        nothing the live view caches, and would evict what it does cache.
+        """
+        from litho_sim.app.stochastics import StochResult, compute_stochastics
+
+        result: StochResult | None = None
+        try:
+            result = compute_stochastics(
+                req, progress=lambda i, n: self.progress_stoch.emit(i, n)
+            )
+        except Exception as exc:                      # noqa: BLE001
+            logger.exception("stochastic batch failed")
+            self.failed.emit(str(exc))
+        # Always emitted, even on failure — same contract as done_fem.
+        self.done_stoch.emit(result)
 
 

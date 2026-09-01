@@ -32,6 +32,7 @@ from litho_sim.develop import (
     film_remaining,
     is_cleared,
     is_sealed,
+    mack_development_rate,
     measure_cd_2d,
     print_resist_3d,
     remaining_thickness,
@@ -45,6 +46,7 @@ from litho_sim.mask import (
     contact_array,
     isolated_line,
     lines_and_spaces,
+    to_attenuated_psm,
 )
 
 
@@ -79,8 +81,12 @@ class ImagingResult:
         )
 
 
-def build_mask(params: ParameterModel) -> NDArray[np.float64]:
-    """The drawn pattern, as a transmittance array."""
+def build_mask(params: ParameterModel) -> NDArray:
+    """The drawn pattern, as a transmittance array.
+
+    Complex-valued when the mask type is att-psm — the dark regions carry a
+    6 % amplitude at 180°, and the imaging path takes complex masks as-is.
+    """
     grid = params.grid()
     n, px = grid.n_pixels, grid.pixel_size
     pitch = params.si("pitch")
@@ -88,15 +94,20 @@ def build_mask(params: ParameterModel) -> NDArray[np.float64]:
     pattern = params["pattern"]
 
     if pattern == "lines and spaces":
-        return lines_and_spaces(n, px, pitch=pitch, cd=cd)
-    if pattern == "contacts":
+        mask = lines_and_spaces(n, px, pitch=pitch, cd=cd)
+    elif pattern == "contacts":
         # Square array: one pitch and one CD control drive both axes.
-        return contact_array(n, px, pitch_x=pitch, pitch_y=pitch, cd_x=cd)
-    if pattern == "isolated line":
-        return isolated_line(n, px, cd=cd)
-    if pattern == "checkerboard":
-        return checkerboard(n, px, pitch=pitch, cd=cd)
-    raise ValueError(f"unknown pattern '{pattern}'")
+        mask = contact_array(n, px, pitch_x=pitch, pitch_y=pitch, cd_x=cd)
+    elif pattern == "isolated line":
+        mask = isolated_line(n, px, cd=cd)
+    elif pattern == "checkerboard":
+        mask = checkerboard(n, px, pitch=pitch, cd=cd)
+    else:
+        raise ValueError(f"unknown pattern '{pattern}'")
+
+    if params["mask_type"] == "att-psm":
+        mask = to_attenuated_psm(mask)
+    return mask
 
 
 def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
@@ -129,39 +140,75 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         mask = build_mask(params)
         aerial = compute_aerial_image(mask, optics, grid, dose=params.dose)
 
-    # Post-exposure bake. The engine's threshold model works in intensity
-    # space and therefore *deliberately* bypasses diffusion
-    # (develop/resist.py) — which left the app's PEB control doing literally
-    # nothing, the same class of defect the vault already records once.
-    # Blurring the aerial image before thresholding is the standard diffused-
-    # aerial-image treatment, and it is what makes the control mean something.
-    # At sigma = 0 (the app's default) apply_peb returns a copy, so the app
-    # still reproduces the CLI and the engine exactly.
-    latent = apply_peb(aerial, resist_cfg.diffusion_sigma, grid.pixel_size)
-    _, _, resist = simulate_resist(latent, resist_cfg, grid, model="threshold")
+    resist_model = params.resist_model
+    if resist_model == "threshold":
+        # Post-exposure bake. The engine's threshold model works in intensity
+        # space and therefore *deliberately* bypasses diffusion
+        # (develop/resist.py) — which left the app's PEB control doing
+        # literally nothing, the same class of defect the vault already
+        # records once. Blurring the aerial image before thresholding is the
+        # standard diffused-aerial-image treatment, and it is what makes the
+        # control mean something. At sigma = 0 (the app's default) apply_peb
+        # returns a copy, so the app still reproduces the CLI and the engine
+        # exactly.
+        latent = apply_peb(aerial, resist_cfg.diffusion_sigma, grid.pixel_size)
+        _, _, resist = simulate_resist(latent, resist_cfg, grid, model="threshold")
 
-    # The Mack rate law over the same latent, kept as a *thickness* rather
-    # than binarised. The threshold model above answers "did it clear"; this
-    # answers "how much is left", which is the difference between a footprint
-    # and a profile — and it is the number the engine was already computing
-    # and discarding.
-    thickness_nm = remaining_thickness(latent, resist_cfg)
+        # The Mack rate law over the same latent, kept as a *thickness*
+        # rather than binarised. The threshold model above answers "did it
+        # clear"; this answers "how much is left", which is the difference
+        # between a footprint and a profile — and it is the number the
+        # engine was already computing and discarding.
+        thickness_nm = remaining_thickness(latent, resist_cfg)
+
+        # Measured from the continuous latent at the develop threshold
+        # rather than from the binarised resist: binarising first quantises
+        # CD to whole pixels (4 nm at defaults — the audit's H5 finding),
+        # and the Process Window tab measures sub-pixel, so the status bar
+        # must agree with it. For positive tone the printed line is the
+        # region *under* threshold.
+        cd_m = measure_cd_2d(
+            latent, grid.pixel_size, threshold=resist_cfg.threshold,
+            feature="below" if resist_cfg.tone == "positive" else "above",
+        )
+        shown_threshold = resist_cfg.threshold
+    else:
+        # Chemistry route — mack or car. simulate_resist owns exposure and
+        # bake internally, so it gets the *aerial*: the dose is already in
+        # it, and the threshold path's pre-blur would double-count the PEB.
+        # The latent panel then shows chemistry, not intensity — PAC after
+        # the Gaussian bake (mack) or the protected fraction after the
+        # reaction–diffusion bake (car), 1 = unexposed in both.
+        _, latent, resist = simulate_resist(
+            aerial, resist_cfg, grid, model=resist_model
+        )
+
+        # Depth the developer clears through that latent, as a thickness map
+        # — the same rule simulate_resist binarised by, kept continuous.
+        rate = mack_development_rate(
+            latent, resist_cfg.mack_Rmax, resist_cfg.mack_Rmin,
+            resist_cfg.mack_Mth, resist_cfg.mack_n,
+        )
+        film_nm = resist_cfg.thickness * 1e9
+        cleared_nm = rate * resist_cfg.develop_time
+        thickness_nm = np.clip(film_nm - cleared_nm, 0.0, film_nm)
+
+        # CD measured where the develop front fails to reach the substrate —
+        # sub-pixel on the continuous cleared-depth field, the same rule the
+        # Process Window's mack/car measurement uses, so the two agree.
+        cd_m = measure_cd_2d(
+            cleared_nm, grid.pixel_size, threshold=film_nm,
+            feature="below" if resist_cfg.tone == "positive" else "above",
+        )
+        # The dashed line the cut plot draws sits on the chemistry latent,
+        # where the meaningful level is the develop threshold.
+        shown_threshold = resist_cfg.mack_Mth
 
     mid = grid.n_pixels // 2
     cut_aerial = aerial[mid, :]
     cut_latent = latent[mid, :]
     cut_resist = resist[mid, :]
     x_nm = np.arange(grid.n_pixels) * grid.pixel_size * 1e9
-
-    # Measured from the continuous latent at the develop threshold rather
-    # than from the binarised resist: binarising first quantises CD to whole
-    # pixels (4 nm at defaults — the audit's H5 finding), and the Process
-    # Window tab measures sub-pixel, so the status bar must agree with it.
-    # For positive tone the printed line is the region *under* threshold.
-    cd_m = measure_cd_2d(
-        latent, grid.pixel_size, threshold=resist_cfg.threshold,
-        feature="below" if resist_cfg.tone == "positive" else "above",
-    )
     nils = compute_nils(
         cut_aerial, grid.pixel_size,
         threshold=resist_cfg.threshold,
@@ -171,7 +218,10 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
     contrast = (hi - lo) / (hi + lo) if (hi + lo) > 0 else 0.0
 
     return ImagingResult(
-        mask=mask,
+        # Display-safe: an att-PSM mask is complex, and imshow of a complex
+        # array is undefined. The real part shows the −24.5 % amplitude
+        # background for what it is.
+        mask=mask.real if np.iscomplexobj(mask) else mask,
         aerial=aerial,
         latent=latent,
         resist=resist,
@@ -186,8 +236,10 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         nils=float(nils),
         contrast=float(contrast),
         # Carried so a view can draw the threshold this image was actually
-        # computed with, even if the control has moved on since.
-        threshold=float(resist_cfg.threshold),
+        # computed with, even if the control has moved on since. For the
+        # chemistry models this is the develop threshold, drawn against the
+        # chemistry-space latent it applies to.
+        threshold=float(shown_threshold),
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
         signature=params.signature(),
     )

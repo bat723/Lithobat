@@ -336,9 +336,9 @@ class ControlPanel(QtWidgets.QWidget):
         stored = self.model.set(key, value)
         if key in self._labels:
             self._labels[key].setText(spec_label(SPECS_BY_KEY[key], stored))
-        if key in ("wavelength", "pattern"):
-            # Both decide which thick-mask models can run, and both live in a
-            # different section from the control they gate.
+        if key in ("wavelength", "pattern", "mask_type"):
+            # All three decide which thick-mask models can run, and all live
+            # in a different section from the control they gate.
             self.refresh_mask_models()
         self.changed.emit(key, stored)
 
@@ -356,7 +356,8 @@ class ControlPanel(QtWidgets.QWidget):
         if combo is None:
             return
         reasons = mask_model_availability(
-            self.model.si("wavelength"), self.model["pattern"]
+            self.model.si("wavelength"), self.model["pattern"],
+            self.model["mask_type"],
         )
         for i in range(combo.count()):
             reason = reasons.get(combo.itemText(i))

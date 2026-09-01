@@ -39,6 +39,7 @@ from litho_sim.app.process_window_tab import ProcessWindowTab
 from litho_sim.app.qt import QtCore, QtGui, QtWidgets
 from litho_sim.app.scheduler import SETTLE_MS, Request, Scheduler
 from litho_sim.app.stack_tab import StackTab
+from litho_sim.app.stochastics_tab import StochasticsTab
 from litho_sim.app.views import (
     DRAFT_STRIDE,
     DevelopView,
@@ -57,6 +58,7 @@ class MainWindow(QtWidgets.QMainWindow):
     request_flow = QtCore.Signal(object)
     request_device = QtCore.Signal(str)
     request_fem = QtCore.Signal(object)
+    request_stoch = QtCore.Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -100,11 +102,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.stack_tab = StackTab(self.model)
         self.pw_tab = ProcessWindowTab(self.model)
+        self.stoch_tab = StochasticsTab(self.model)
         self.tabs.addTab(self.stack_tab, "Wafer Stack")
         self.tabs.addTab(self.mask_view, "Mask")
         self.tabs.addTab(self.expose_view, "Expose")
         self.tabs.addTab(self.develop_tab, "Develop")
         self.tabs.addTab(self.pw_tab, "Process Window")
+        self.tabs.addTab(self.stoch_tab, "Stochastics")
         self.tabs.setCurrentWidget(self.stack_tab)
         self.setCentralWidget(self.tabs)
         self._last_result: ImagingResult | None = None
@@ -173,6 +177,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.request_fem.connect(self.worker.run_fem)
         self.worker.done_fem.connect(self.pw_tab.on_finished)
         self.worker.progress_fem.connect(self.pw_tab.on_progress)
+        # Same relay pattern for the Monte-Carlo batch.
+        self.stoch_tab.run_requested.connect(self.request_stoch)
+        self.request_stoch.connect(self.worker.run_stoch)
+        self.worker.done_stoch.connect(self.stoch_tab.on_finished)
+        self.worker.progress_stoch.connect(self.stoch_tab.on_progress)
         self._build_menu()
 
         self._profile: object | None = None

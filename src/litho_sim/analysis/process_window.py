@@ -151,6 +151,11 @@ def _measure_point(
     * **mack model**: runs Dill → PEB → Mack rate and measures the develop
       depth field against the film thickness — where the front fails to
       reach the substrate, resist survives.
+    * **car model**: runs acid generation → acid/quencher reaction–diffusion
+      → Mack rate on the *protected* fraction, measured the same way. Note
+      the bake makes the dose axis genuinely non-linear (that is the
+      quencher's whole point), and each grid point pays for a PDE bake —
+      a car sweep costs seconds per point, not milliseconds.
     """
     mid = aerial.shape[0] // 2
     if model == "threshold":
@@ -176,7 +181,38 @@ def _measure_point(
         return measure_cd_1d(
             cut, grid.pixel_size, threshold=thickness_nm, feature=feature
         )
-    raise ValueError(f"Unknown resist model: '{model}'. Choose 'threshold' or 'mack'.")
+    if model == "car":
+        from litho_sim.bake.reaction import bake_reaction_diffusion
+        from litho_sim.expose.photochem import generate_acid
+
+        # The bake diffuses in 2-D, so the whole field is baked and the cut
+        # taken afterwards — cutting first would turn lateral diffusion off.
+        acid = generate_acid(aerial, resist_cfg, grid.pixel_size, dose=1.0)
+        baked = bake_reaction_diffusion(
+            acid,
+            grid.pixel_size,
+            resist_cfg.bake_time,
+            resist_cfg.D_acid,
+            quencher=resist_cfg.quencher_ratio,
+            D_quencher=resist_cfg.D_quencher,
+            k_quench=resist_cfg.k_quench,
+            k_loss=resist_cfg.k_loss,
+            k_amp=resist_cfg.k_amp,
+        )
+        rate = mack_development_rate(
+            baked["protected"], resist_cfg.mack_Rmax, resist_cfg.mack_Rmin,
+            resist_cfg.mack_Mth, resist_cfg.mack_n,
+        )
+        cleared_nm = rate * resist_cfg.develop_time
+        cut = cleared_nm[mid, :]
+        thickness_nm = resist_cfg.thickness * 1e9
+        feature = "below" if resist_cfg.tone == "positive" else "above"
+        return measure_cd_1d(
+            cut, grid.pixel_size, threshold=thickness_nm, feature=feature
+        )
+    raise ValueError(
+        f"Unknown resist model: '{model}'. Choose 'threshold', 'mack' or 'car'."
+    )
 
 
 def evaluate_cd(

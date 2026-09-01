@@ -159,6 +159,10 @@ def compute_fem(
     optics = params.optics()
     resist = params.resist()
     mask = build_mask(params)
+    # The sweep develops with the same model the live tabs show. For "car"
+    # the dose axis stops being a free rescale — the quencher makes the bake
+    # non-linear in dose, so every grid point pays for a PDE bake.
+    model = params.resist_model
 
     total = req.n_focus + (1 if req.auto_centre_dose else 0) + (2 if req.with_meef else 0)
     done = 0
@@ -174,7 +178,7 @@ def compute_fem(
     if req.auto_centre_dose:
         anchored = calibrate_dose_to_size(
             mask, optics, grid, resist,
-            target_cd_nm=req.target_cd_nm, defocus_nm=0.0,
+            target_cd_nm=req.target_cd_nm, defocus_nm=0.0, model=model,
         )
         if np.isfinite(anchored):
             nominal_dose = float(anchored)
@@ -197,6 +201,7 @@ def compute_fem(
     bossung_df = sweep_dose_focus(
         mask=mask, optics=optics, grid=grid, resist=resist,
         doses=doses, defoci_nm=defoci,
+        model=model,
         target_cd_nm=req.target_cd_nm,
         progress=lambda _i, _n: tick(),
     )
@@ -213,6 +218,7 @@ def compute_fem(
             meef = compute_meef(
                 mask, optics, grid, resist,
                 dose=pw["best_dose"], defocus_nm=pw["best_focus_nm"],
+                model=model,
             )
         except ValueError as exc:
             logger.warning("FEM: MEEF skipped — %s", exc)
@@ -222,7 +228,7 @@ def compute_fem(
         f"{params['pattern']} · pitch {params['pitch']:.0f} nm · "
         f"target {req.target_cd_nm:.0f} nm ±{req.tolerance_pct:.0f}% · "
         f"NA {params['NA']:.2f} · σ {params['sigma_outer']:.2f} · "
-        f"{params['imaging_model']}, clear-normalised"
+        f"{params['imaging_model']} · {model} resist, clear-normalised"
     )
 
     return ProcessWindowResult(
