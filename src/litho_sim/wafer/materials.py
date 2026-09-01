@@ -35,8 +35,9 @@ class Material:
         expressed.
     role : str
         ``"substrate"``, ``"hardmask"``, ``"mandrel"``, ``"spacer"``,
-        ``"resist"``, or ``"film"``.  Process steps use this to find their
-        target without hard-coding material names.
+        ``"resist"``, ``"film"``, ``"metal"``, or ``"vacuum"``.  Process
+        steps use this to find their target without hard-coding material
+        names.
     n_index : complex
         Refractive index at the exposure wavelength.  Used by the 3-D resist
         model for absorption and substrate reflection.

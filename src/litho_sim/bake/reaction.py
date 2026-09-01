@@ -102,8 +102,11 @@ def bake_reaction_diffusion(
     D_acid, D_quencher : float
         Diffusivities [m²/s]. Quencher is usually far less mobile than acid;
         leaving ``D_quencher`` at 0 pins it where it was formulated.
-    quencher : float
-        Initial quencher loading, uniform, in the same units as *acid*.
+    quencher : float or NDArray
+        Initial quencher loading, in the same units as *acid*. A scalar means
+        uniform — the deterministic case, where base is formulated in evenly.
+        An array is a per-voxel loading, which is what the stochastic path
+        supplies: sampled molecule counts are anything but uniform.
     k_quench : float
         Acid–base neutralisation rate. This is the term that turns a blur into
         a threshold.
@@ -112,13 +115,16 @@ def bake_reaction_diffusion(
     k_amp : float
         Deprotection rate constant. With ``k_amp = 0`` the protected fraction
         is left untouched and only the acid field evolves.
-    protected : float
-        Initial protected fraction, uniform.
+    protected : float or NDArray
+        Initial protected fraction — scalar for uniform, array for per-voxel.
     spacing : tuple of float, optional
         Per-axis voxel size [m], when the grid is anisotropic — which it is in
         3-D here, where ``dz`` is not ``pixel_size``.
     max_steps : int
-        Guard against a pathological time step. Exceeding it is logged.
+        Guard against a pathological time step. When only reaction *accuracy*
+        is at stake the cap is applied and logged; when the diffusion
+        *stability* limit cannot be honoured within the budget the call
+        raises instead, because integrating anyway diverges to NaN.
 
     Returns
     -------
@@ -131,10 +137,21 @@ def bake_reaction_diffusion(
     h = np.asarray(spacing if spacing else (pixel_size,) * acid.ndim, dtype=float)
     if h.size != acid.ndim:
         raise ValueError(f"spacing has {h.size} entries for a {acid.ndim}-D field")
+    if np.any(h <= 0.0):
+        raise ValueError(f"voxel sizes must be positive, got {tuple(h)}")
+    if bake_time < 0.0:
+        raise ValueError(f"bake_time must be non-negative, got {bake_time}")
 
     H = acid.copy()
-    Q = np.full_like(H, float(quencher))
-    M = np.full_like(H, float(protected))
+    # Scalars broadcast to uniform fields; arrays pass through as per-voxel
+    # loadings. Copy so the integration never writes into caller memory.
+    Q = np.broadcast_to(np.asarray(quencher, dtype=np.float64), H.shape).copy()
+    M = np.broadcast_to(np.asarray(protected, dtype=np.float64), H.shape).copy()
+
+    if bake_time == 0.0:
+        # The t → 0 limit is the identity, and the step-size arithmetic below
+        # cannot express it (0/0) — return the fields untouched.
+        return {"acid": H, "quencher": Q, "protected": M, "steps": 0}
 
     D_max = max(D_acid, D_quencher)
     h_min = float(h.min())
@@ -144,11 +161,25 @@ def bake_reaction_diffusion(
         dt_diff = bake_time
     # The reaction terms have their own timescale; a fast quench with a coarse
     # step would overshoot into negative concentrations.
-    rate_scale = max(k_quench * max(float(H.max()), float(quencher), 1e-30),
+    rate_scale = max(k_quench * max(float(H.max()), float(Q.max()), 1e-30),
                      k_loss, k_amp * float(H.max()), 1e-30)
     dt = min(dt_diff, _SAFETY / rate_scale, bake_time)
     n_steps = max(int(np.ceil(bake_time / dt)), 1)
     if n_steps > max_steps:
+        # The two dt constraints fail differently when capped. Over-stepping
+        # the reaction terms is merely inaccurate — the concentration floors
+        # and the exponential keep everything finite. Over-stepping the
+        # diffusion limit is *divergent*: the explicit stencil amplifies
+        # grid-scale modes and the field goes NaN, which is not a result any
+        # caller can use.
+        if bake_time / max_steps > dt_diff:
+            n_diff = int(np.ceil(bake_time / dt_diff))
+            raise ValueError(
+                f"bake needs {n_diff} steps to stay inside the diffusion "
+                f"stability limit but max_steps={max_steps}; integrating "
+                "anyway would diverge to NaN. Reduce bake_time or the "
+                "diffusivities, or raise max_steps."
+            )
         logger.warning(
             "PEB reaction-diffusion wanted %d steps; capping at %d. The bake "
             "will be under-resolved in time — reduce bake_time, D or the rate "

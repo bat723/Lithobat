@@ -109,6 +109,17 @@ def _tilted_admittance(n: NDArray, cos_theta: NDArray, polarisation: str) -> NDA
     raise ValueError(f"polarisation must be 's' or 'p', got '{polarisation}'")
 
 
+def _check_wavelength(wavelength: float) -> None:
+    """Reject a non-positive (or NaN) wavelength before it becomes NaN output.
+
+    ``δ = 2πnd/λ`` divides by the wavelength, so zero produces a silent wall
+    of NaN reflectances rather than an error — worse than crashing, because a
+    swing curve of NaNs plots as an empty axis and looks like a blank stack.
+    """
+    if not wavelength > 0:
+        raise ValueError(f"wavelength must be positive, got {wavelength}")
+
+
 @dataclass
 class FilmStack:
     """An ordered film stack: ambient first, substrate last.
@@ -138,6 +149,13 @@ class FilmStack:
                 f"resist_index {self.resist_index} is not a real layer "
                 f"(must be between 1 and {len(self.films) - 2})"
             )
+        for f in self.films[1:-1]:
+            # A negative thickness flips the sign of δ, which turns an
+            # absorbing layer into an amplifying one — silently unphysical.
+            if not f.thickness >= 0:
+                raise ValueError(
+                    f"film '{f.name}' has negative thickness {f.thickness}"
+                )
 
     # ------------------------------------------------------------------
     # Geometry
@@ -179,6 +197,7 @@ class FilmStack:
         self, layer: int, wavelength: float, theta0: float, polarisation: str
     ) -> complex:
         """Amplitude reflection seen looking *down* from the top of *layer*."""
+        _check_wavelength(wavelength)
         cos_theta = self._cos_thetas(theta0)
         n = _propagation_index([f.n for f in self.films])
         eta = np.array(
@@ -260,6 +279,7 @@ class FilmStack:
         NDArray
             ``|E(z)|²``, same shape as *z*.
         """
+        _check_wavelength(wavelength)
         cos_theta = self._cos_thetas(theta0)
         j = self.resist_index
         # Real part only: this is the interference envelope. Attenuation is
@@ -351,9 +371,21 @@ def film_stack_from_records(
     Returns
     -------
     FilmStack
+
+    Raises
+    ------
+    ValueError
+        If the resist or any record has a negative thickness.  A negative
+        layer runs the characteristic matrix backwards, so an absorbing film
+        *amplifies* and reflectance comes out greater than one.
+    KeyError
+        If a record names a material the library does not know.
     """
     # Imported lazily so the TMM physics stays independent of the voxel stack.
     from litho_sim.wafer import get_material
+
+    if resist_thickness < 0:
+        raise ValueError(f"resist thickness must be >= 0, got {resist_thickness}")
 
     films = [
         Film("ambient", 0.0, ambient_n),
@@ -367,7 +399,13 @@ def film_stack_from_records(
         else:
             n = complex(float(rec.get("n", 1.5)), float(rec.get("k", 0.0)))
             name = rec.get("name", "layer")
-        films.append(Film(name, float(rec["thickness"]), n))
+        thickness = float(rec["thickness"])
+        if thickness < 0:
+            raise ValueError(
+                f"film '{name}' has negative thickness {thickness}; "
+                "layers must be >= 0 m thick"
+            )
+        films.append(Film(name, thickness, n))
 
     sub = get_material(substrate)
     films.append(Film(sub.name, 0.0, complex(sub.n_index)))

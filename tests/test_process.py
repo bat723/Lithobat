@@ -459,8 +459,14 @@ def test_sadp_spacer_width_equals_deposited_thickness(
 
     That is the whole reason SADP exists — deposition thickness is far
     better controlled than a printed edge.
+
+    The sweep stops where the geometry does: the printed mandrels leave a
+    ~44 nm gap, so two opposing spacers fit only while 2t stays under it.
+    The old ceiling of 24 nm passed only because ``deposit_conformal``
+    under-deposited films at exact voxel multiples; with that fixed, 24 nm
+    spacers genuinely merge — asserted below as its own case.
     """
-    for t in (16e-9, 20e-9, 24e-9):
+    for t in (12e-9, 16e-9, 20e-9):
         flow = sadp(mandrel_layout, sadp_grid, optics, resist, spacer_thickness=t)
         res = flow.run(snapshot=False)
         by_name = {r["name"]: r for _, r in res.measurements.iterrows()}
@@ -469,6 +475,18 @@ def test_sadp_spacer_width_equals_deposited_thickness(
         assert np.mean(widths) == pytest.approx(
             t * 1e9, abs=1.5 * sadp_grid.pixel_size * 1e9
         ), f"deposited {t*1e9:.0f} nm, measured {np.mean(widths):.0f} nm"
+
+    # Past the gap limit the two sidewall films meet: the measured feature is
+    # the whole filled gap, decisively wider than the deposited thickness.
+    flow = sadp(mandrel_layout, sadp_grid, optics, resist, spacer_thickness=24e-9)
+    res = flow.run(snapshot=False)
+    by_name = {r["name"]: r for _, r in res.measurements.iterrows()}
+    widths = by_name["spacers"]["lines_nm"]
+    assert widths, "no spacers printed"
+    assert np.mean(widths) > 24.0 + 1.5 * sadp_grid.pixel_size * 1e9, (
+        f"24 nm spacers in a ~44 nm gap should merge, measured "
+        f"{np.mean(widths):.0f} nm"
+    )
 
 
 def test_sadp_halves_the_pitch(sadp_grid, optics, resist, mandrel_layout):

@@ -5,9 +5,14 @@ Implements the standard photoresist pipeline for both positive and negative
 tone resists:
 
 1. **Exposure**          – Dill photochemical model (PAC bleaching)
-2. **Post-Exposure Bake** – acid diffusion via Gaussian blur
+2. **Post-Exposure Bake** – acid diffusion via Gaussian blur, or full CAR
+   acid/quencher reaction–diffusion (``model="car"``)
 3. **Development**       – Mack 4-parameter or simple threshold model
-4. **Stochastic LER**    – optional line-edge roughness
+4. **Stochastic LER**    – optional correlated edge roughness
+
+The physical stochastic route — photon shot noise and molecular counting
+propagated through the chemistry, rather than roughness stamped on at the
+end — is :func:`litho_sim.develop.stochastic.stochastic_trials`.
 
 Physical models
 ---------------
@@ -271,65 +276,27 @@ def threshold_development(
         raise ValueError(f"tone must be 'positive' or 'negative', got '{tone}'")
 
 # ---------------------------------------------------------------------------
-# Step 4 – Stochastic LER
-# ---------------------------------------------------------------------------
-
-
-def _apply_stochastic_ler(
-    resist: NDArray[np.float64],
-    sigma: float,
-    pixel_size: float,
-    seed: int | None = None,
-) -> NDArray[np.float64]:
-    """Add stochastic line-edge roughness (LER) to a binary resist image.
-
-    Identifies edge pixels (1-pixel dilate XOR 1-pixel erode) and
-    randomly flips them based on a Gaussian probability proportional to
-    *sigma*.
-
-    Parameters
-    ----------
-    resist : NDArray
-        Binary resist image (0/1).
-    sigma : float
-        Edge noise standard deviation [m].
-    pixel_size : float
-        Physical pixel size [m].
-    seed : int, optional
-        RNG seed for reproducibility.
-
-    Returns
-    -------
-    NDArray[np.float64]
-        Resist image with LER applied.
-    """
-    from scipy.ndimage import binary_dilation, binary_erosion
-
-    rng = np.random.default_rng(seed)
-    sigma_px = max(sigma / pixel_size, 1e-6)
-
-    binary = resist.astype(bool)
-    edge = binary_dilation(binary) ^ binary_erosion(binary)
-    edge_coords = np.argwhere(edge)
-
-    result = resist.copy()
-    for iy, ix in edge_coords:
-        flip_prob = 1.0 - np.exp(-0.5 / (sigma_px ** 2))
-        if rng.random() < flip_prob:
-            result[iy, ix] = 1.0 - result[iy, ix]
-
-    logger.debug(
-        "LER: σ=%.1f nm (%.2f px), flipped %d / %d edge pixels",
-        sigma * 1e9, sigma_px,
-        int(np.sum(np.abs(result - resist))),
-        len(edge_coords),
-    )
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
+
+
+def _mack_binary(
+    latent: NDArray[np.float64], cfg: ResistConfig
+) -> NDArray[np.float64]:
+    """Develop a latent image to a binary resist map under the Mack model.
+
+    *latent* is whatever field plays the role of "how protected is this
+    voxel" — PAC after a Gaussian bake, or the protected fraction after the
+    CAR bake. Both develop by the same rule: the developer clears
+    ``rate × develop_time`` of depth, and resist survives where that fails
+    to reach the substrate.
+    """
+    rate = mack_development_rate(
+        latent, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
+    )
+    cleared_nm = rate * cfg.develop_time
+    remaining = (cleared_nm < cfg.thickness * 1e9).astype(np.float64)
+    return remaining if cfg.tone == "positive" else 1.0 - remaining
 
 
 def simulate_resist(
@@ -357,6 +324,13 @@ def simulate_resist(
         used in practice.
         ``"mack"`` – physical route: Dill exposure → PEB diffusion →
         Mack 4-parameter dissolution, developed for ``cfg.develop_time``.
+        ``"car"`` – chemically amplified route: Dill acid generation →
+        acid/quencher reaction–diffusion with catalytic deprotection
+        (:func:`litho_sim.bake.reaction.bake_reaction_diffusion`) → Mack
+        dissolution of the *protected* fraction.  The quencher is what makes
+        this differ from ``"mack"``: sub-threshold acid is annihilated
+        rather than blurred, so dose response is asymmetric and contrast
+        comes from chemistry rather than the Mack exponent alone.
     dose : float
         *Additional* Dill exposure multiplier, applied only on the ``"mack"``
         path.  Leave at 1.0 when *aerial* already carries the dose, which is
@@ -368,7 +342,9 @@ def simulate_resist(
         PAC concentration after exposure, after PEB, and the developed resist
         image (1 = resist remaining, 0 = cleared).  On the ``"threshold"``
         path the first two are copies of *aerial*, since that model never
-        enters PAC space.
+        enters PAC space.  On the ``"car"`` path they are the analogous
+        chemistry fields — unconverted PAG after exposure, protected fraction
+        after the bake — chosen so 1 means "unexposed" in every model.
 
     Raises
     ------
@@ -383,21 +359,40 @@ def simulate_resist(
     elif model == "mack":
         pac_exp = dill_exposure(aerial, dose * cfg.dose_nominal, cfg.dill_C)
         pac_peb = apply_peb(pac_exp, cfg.diffusion_sigma, grid.pixel_size)
-        rate = mack_development_rate(
-            pac_peb, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
+        resist = _mack_binary(pac_peb, cfg)
+    elif model == "car":
+        from litho_sim.bake.reaction import bake_reaction_diffusion
+        from litho_sim.expose.photochem import generate_acid
+
+        acid = generate_acid(aerial, cfg, grid.pixel_size, dose=dose)
+        # Unconverted PAG: the CAR analogue of PAC, 1 = unexposed.
+        pac_exp = 1.0 - acid
+        baked = bake_reaction_diffusion(
+            acid,
+            grid.pixel_size,
+            cfg.bake_time,
+            cfg.D_acid,
+            quencher=cfg.quencher_ratio,
+            D_quencher=cfg.D_quencher,
+            k_quench=cfg.k_quench,
+            k_loss=cfg.k_loss,
+            k_amp=cfg.k_amp,
         )
-        # Depth cleared in the develop time [nm]; resist survives where the
-        # develop front fails to reach the substrate.
-        cleared_nm = rate * cfg.develop_time
-        thickness_nm = cfg.thickness * 1e9
-        remaining = (cleared_nm < thickness_nm).astype(np.float64)
-        resist = remaining if cfg.tone == "positive" else 1.0 - remaining
+        pac_peb = baked["protected"]
+        resist = _mack_binary(pac_peb, cfg)
     else:
-        raise ValueError(f"Unknown resist model: '{model}'. Choose 'threshold' or 'mack'.")
+        raise ValueError(
+            f"Unknown resist model: '{model}'. Choose 'threshold', 'mack' or 'car'."
+        )
 
     if cfg.use_stochastic:
-        resist = _apply_stochastic_ler(
-            resist, cfg.stochastic_sigma, grid.pixel_size
+        from litho_sim.develop.stochastic import add_edge_roughness
+
+        resist = add_edge_roughness(
+            resist,
+            cfg.stochastic_sigma,
+            cfg.stochastic_corr_length,
+            grid.pixel_size,
         )
 
     logger.debug(
@@ -410,44 +405,40 @@ def simulate_resist(
 # ---------------------------------------------------------------------------
 
 
-def measure_cd_1d(
+def feature_edges(
     profile: NDArray[np.float64],
-    pixel_size: float,
     threshold: float = 0.5,
     *,
     feature: str = "above",
-) -> float:
-    """Measure the CD of the centre feature from a 1-D profile.
+) -> tuple[float, float] | None:
+    """Sub-pixel (rise, fall) indices of the centre feature of a 1-D profile.
 
     Finds all threshold crossings by linear interpolation between the
-    bracketing samples, selects the feature whose centre is closest to the
-    midpoint of the array, and returns its width in metres.
+    bracketing samples, pairs each rising edge with the next falling one, and
+    returns the pair whose centre is closest to the midpoint of the array —
+    or ``None`` when no closed feature exists, which is itself a result: on
+    a resist cutline it means the line broke.
 
-    On a binary profile every crossing interpolates to exactly half a pixel
-    past the gap index, so the result reproduces the historical integer-pixel
-    answer bit-for-bit. On a continuous profile (an aerial cutline, a
-    develop-depth field) the crossing lands sub-pixel, which is what makes
-    CD-through-focus resolvable below the 4 nm grid quantum.
+    This is the primitive under :func:`measure_cd_1d` (CD is the difference
+    of the two numbers) and under the LER measurement in
+    :mod:`litho_sim.analysis.stochastics` (edge position row by row *is* the
+    roughness signal).
 
     Parameters
     ----------
     profile : NDArray
         1-D profile — binary resist, aerial intensity, or any continuous
         field the threshold is defined against.
-    pixel_size : float
-        Physical pixel size [m].
     threshold : float
         Threshold for edge detection, in the same units as *profile*.
     feature : str
-        ``"above"`` measures the region above threshold (a bright feature, or
-        remaining resist in a binary image). ``"below"`` measures the region
-        under threshold — the printed line of a positive-tone resist in an
-        aerial image, which is the *dark* region.
+        ``"above"`` finds the region above threshold (a bright feature, or
+        remaining resist in a binary image); ``"below"`` the region under it.
 
     Returns
     -------
-    float
-        Measured CD [m].  Returns 0.0 if no closed feature is found.
+    tuple of float, or None
+        Fractional indices ``(x_rise, x_fall)`` of the feature's edges.
     """
     p = np.asarray(profile, dtype=np.float64)
     thr = float(threshold)
@@ -463,7 +454,7 @@ def measure_cd_1d(
     falling = np.where(diff == -1)[0]
 
     if rising.size == 0 or falling.size == 0:
-        return 0.0
+        return None
 
     def crossing(i: int) -> float:
         """Fractional index where the profile crosses *thr* in gap (i, i+1)."""
@@ -481,13 +472,53 @@ def measure_cd_1d(
             features.append((crossing(int(r)), crossing(int(after[0]))))
 
     if not features:
-        return 0.0
+        return None
 
     # Select the feature closest to the array centre
     centre = len(p) / 2.0
     feat_centres = np.array([(x_r + x_f) / 2.0 for x_r, x_f in features])
     idx = int(np.argmin(np.abs(feat_centres - centre)))
-    x_rise, x_fall = features[idx]
+    return features[idx]
+
+
+def measure_cd_1d(
+    profile: NDArray[np.float64],
+    pixel_size: float,
+    threshold: float = 0.5,
+    *,
+    feature: str = "above",
+) -> float:
+    """Measure the CD of the centre feature from a 1-D profile.
+
+    The width of the feature :func:`feature_edges` selects, in metres.
+
+    On a binary profile every crossing interpolates to exactly half a pixel
+    past the gap index, so the result reproduces the historical integer-pixel
+    answer bit-for-bit. On a continuous profile (an aerial cutline, a
+    develop-depth field) the crossing lands sub-pixel, which is what makes
+    CD-through-focus resolvable below the 4 nm grid quantum.
+
+    Parameters
+    ----------
+    profile : NDArray
+        1-D profile — binary resist, aerial intensity, or any continuous
+        field the threshold is defined against.
+    pixel_size : float
+        Physical pixel size [m].
+    threshold : float
+        Threshold for edge detection, in the same units as *profile*.
+    feature : str
+        Forwarded to :func:`feature_edges` — ``"above"`` or ``"below"``.
+
+    Returns
+    -------
+    float
+        Measured CD [m].  Returns 0.0 if no closed feature is found.
+    """
+    edges = feature_edges(profile, threshold, feature=feature)
+    if edges is None:
+        return 0.0
+    x_rise, x_fall = edges
     return float((x_fall - x_rise) * pixel_size)
 
 

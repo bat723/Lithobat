@@ -12,7 +12,10 @@ from litho_sim.mask.geometry import (
     Polygon,
     Rect,
     Shape,
+    polygon_distance,
     rasterize_shapes,
+    shape_from_dict,
+    shapes_overlap_distance,
 )
 from litho_sim.mask.layout import (
     Layout,
@@ -32,7 +35,8 @@ from litho_sim.mask.patterns import (
 )
 
 __all__ = [
-    "Contact", "PathShape", "Polygon", "Rect", "Shape", "rasterize_shapes",
+    "Contact", "PathShape", "Polygon", "Rect", "Shape", "polygon_distance",
+    "rasterize_shapes", "shape_from_dict", "shapes_overlap_distance",
     "Layout", "contact_grid", "cut_bar", "decompose", "line_array", "split_by_color",
     "apply_bias", "checkerboard", "contact_array", "isolated_line",
     "lines_and_spaces", "to_attenuated_psm",

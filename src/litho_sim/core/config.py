@@ -86,6 +86,46 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
         "diffusion_sigma": 30e-9,
         "use_stochastic": False,
         "stochastic_sigma": 1e-9,
+        # CAR chemistry (develop model "car"). A KrF/ArF-class formulation:
+        # moderate PAG loading, base quencher at 10 % of it.
+        "pag_density": 2.0e26,
+        "quencher_ratio": 0.10,
+        "bake_time": 60.0,
+        "D_acid": 4.0e-18,
+        "k_quench": 20.0,
+        "k_amp": 0.05,
+    },
+    "EUV CAR (Positive)": {
+        "tone": "positive",
+        "threshold": 0.25,
+        # No bleaching at 13.5 nm — absorption is atomic, not chromophore
+        # chemistry — so Dill A is 0 and B carries the whole absorbance
+        # (~4 /µm for an organic CAR at EUV).
+        "dill_A": 0.0,
+        "dill_B": 4.0,
+        "dill_C": 0.05,
+        "mack_Rmax": 150.0,
+        "mack_Rmin": 0.001,
+        "mack_Mth": 0.60,
+        "mack_n": 8,
+        "diffusion_sigma": 20e-9,
+        "use_stochastic": False,
+        "stochastic_sigma": 1e-9,
+        # Thin film — EUV resists run 30–50 nm to hold aspect ratio.
+        "thickness": 50e-9,
+        # Heavier PAG and quencher loadings than DUV: photons are ~14x more
+        # energetic and ~14x scarcer at equal dose, so the formulation fights
+        # shot noise with more acid per absorption and more base to sharpen
+        # the confinement.
+        "pag_density": 3.0e26,
+        "quencher_ratio": 0.20,
+        "bake_time": 60.0,
+        "D_acid": 3.0e-18,
+        "k_quench": 20.0,
+        "k_amp": 0.05,
+        # Photoelectron / secondary-electron range: acid is generated where
+        # the electron cascade ends, a few nm from the absorption site.
+        "electron_blur_sigma": 4e-9,
     },
     "Generic Negative": {
         "tone": "negative",
@@ -345,11 +385,47 @@ class ResistConfig:
     mack_n : int
         Mack model contrast exponent.
     diffusion_sigma : float
-        PEB acid diffusion length [m].
+        PEB acid diffusion length [m].  Drives the Gaussian-blur bake of the
+        ``"mack"`` path; the ``"car"`` path bakes with ``D_acid × bake_time``
+        instead and ignores this.
     use_stochastic : bool
-        Enable stochastic LER noise.
+        Add correlated line-edge roughness to the developed binary image.
+        This is the *cosmetic* noise knob — a statistical texture stamped on
+        after development.  The physical route, where roughness emerges from
+        photon and molecular counting statistics, is
+        :func:`litho_sim.develop.stochastic.stochastic_trials`.
     stochastic_sigma : float
-        Standard deviation of edge noise [m].
+        1-σ edge displacement of that roughness [m].
+    stochastic_corr_length : float
+        Correlation length of the roughness along the edge [m].  Real LER is
+        not white: reported correlation lengths are tens of nanometres, and
+        uncorrelated single-pixel noise averages away under any CD
+        measurement, which is why the old edge-flip model changed nothing.
+    pag_density : float
+        Photoacid-generator loading [1/m³].  Sets the molecular count per
+        voxel and with it the size of the counting noise — the deterministic
+        chemistry never sees it.
+    quencher_ratio : float
+        Initial base-quencher loading as a fraction of the PAG loading.
+        This is the knob that turns the bake non-linear: acid below the
+        quencher level is annihilated, acid above it survives.
+    bake_time : float
+        PEB duration [s], for the ``"car"`` reaction–diffusion bake.
+    D_acid, D_quencher : float
+        Acid / quencher diffusivities during the bake [m²/s].  The default
+        quencher is immobile, which is what bulky base molecules do.
+    k_quench : float
+        Acid–base neutralisation rate [1/s per unit concentration], with
+        concentrations measured in units of the initial PAG loading.
+    k_amp : float
+        Catalytic deprotection rate [1/s per unit acid].  ``k_amp ×
+        acid × bake_time`` of order a few is a well-amplified resist.
+    k_loss : float
+        First-order acid loss (evaporation, side reactions) [1/s].
+    electron_blur_sigma : float
+        Photoelectron blur [m].  At EUV a 92 eV absorption releases an
+        electron cascade and the acid appears where the cascade thermalises,
+        a few nm away.  0 disables it, which is right for DUV.
     thickness : float
         As-coated resist film thickness [m].  Sets the z extent of the 3-D
         exposure volume and the depth the develop front must clear.
@@ -418,6 +494,19 @@ class ResistConfig:
     diffusion_sigma: float = 20e-9
     use_stochastic: bool = False
     stochastic_sigma: float = 1e-9
+    stochastic_corr_length: float = 25e-9
+    # CAR chemistry — consumed by develop model "car" and the stochastic
+    # trial runner. Defaults are a generic DUV formulation; the deterministic
+    # path never reads pag_density.
+    pag_density: float = 2.0e26
+    quencher_ratio: float = 0.10
+    bake_time: float = 60.0
+    D_acid: float = 4.0e-18
+    D_quencher: float = 0.0
+    k_quench: float = 20.0
+    k_amp: float = 0.05
+    k_loss: float = 0.0
+    electron_blur_sigma: float = 0.0
     thickness: float = 100e-9
     develop_time: float = 5.0
     dose_nominal: float = 30.0

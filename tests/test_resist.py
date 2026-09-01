@@ -50,7 +50,7 @@ def aerial(cfg) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("model", ["threshold", "mack"])
+@pytest.mark.parametrize("model", ["threshold", "mack", "car"])
 def test_simulate_resist_runs(aerial, cfg, model):
     """Both development models must run and return three same-shaped arrays."""
     pac_exp, pac_peb, resist = simulate_resist(
@@ -61,14 +61,14 @@ def test_simulate_resist_runs(aerial, cfg, model):
         assert np.isfinite(arr).all()
 
 
-@pytest.mark.parametrize("model", ["threshold", "mack"])
+@pytest.mark.parametrize("model", ["threshold", "mack", "car"])
 def test_simulate_resist_is_binary(aerial, cfg, model):
     """The developed image is binary: 1 = resist remaining, 0 = cleared."""
     _, _, resist = simulate_resist(aerial, cfg.resist, cfg.grid, model=model)
     assert set(np.unique(resist)).issubset({0.0, 1.0})
 
 
-@pytest.mark.parametrize("model", ["threshold", "mack"])
+@pytest.mark.parametrize("model", ["threshold", "mack", "car"])
 def test_simulate_resist_prints_a_pattern(aerial, cfg, model):
     """A resolvable L/S must actually pattern — not clear or retain everywhere.
 

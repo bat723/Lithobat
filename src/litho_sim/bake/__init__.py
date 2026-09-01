@@ -1,11 +1,22 @@
-"""Post-exposure bake: acid diffusion smoothing the latent image.
+"""Post-exposure bake: what happens to the latent image between exposure and
+development.
 
-The step between exposure and development — and the reason standing waves
-don't print. ``peb`` holds the 2-D and 3-D Gaussian diffusion models;
-reaction–diffusion (acid/quencher, CAR kinetics) lands here when the
-chemically-amplified-resist work does.
+Two models of the same step:
+
+* ``peb`` — a single Gaussian blur, the linear single-species approximation.
+  What washes out standing waves, and all a conventional resist needs.
+* ``reaction`` — coupled acid/quencher reaction–diffusion with catalytic
+  deprotection, the chemically-amplified-resist kinetics. The quencher is
+  what turns the bake from a blur into a threshold; the develop model
+  ``"car"`` runs on this.
 """
 
 from litho_sim.bake.peb import apply_peb, apply_peb_3d
+from litho_sim.bake.reaction import bake_reaction_diffusion, diffusion_length
 
-__all__ = ["apply_peb", "apply_peb_3d"]
+__all__ = [
+    "apply_peb",
+    "apply_peb_3d",
+    "bake_reaction_diffusion",
+    "diffusion_length",
+]

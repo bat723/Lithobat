@@ -7,6 +7,7 @@ into. Reserved here for the device ladder: a second per-voxel dopant volume
 is a single array.
 """
 
+from litho_sim.wafer.etch_profile import EtchProfile
 from litho_sim.wafer.materials import (
     MATERIAL_LIBRARY,
     VACUUM,
@@ -15,4 +16,11 @@ from litho_sim.wafer.materials import (
 )
 from litho_sim.wafer.stack import Stack
 
-__all__ = ["MATERIAL_LIBRARY", "VACUUM", "Material", "Stack", "get_material"]
+__all__ = [
+    "MATERIAL_LIBRARY",
+    "VACUUM",
+    "EtchProfile",
+    "Material",
+    "Stack",
+    "get_material",
+]

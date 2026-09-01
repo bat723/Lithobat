@@ -1,13 +1,25 @@
-"""Analysis: process windows, Bossung curves, NILS, and results I/O.
+"""Analysis: process windows, Bossung curves, NILS, roughness, and results I/O.
 
 ``process_window`` is the sweep/window machinery; ``data_utils`` validates
-and pivots the resulting DataFrames.
+and pivots the resulting DataFrames; ``stochastics`` measures LER/LWR, LCDU
+and failure rates from stochastic printing trials.
 """
 
 from litho_sim.analysis.data_utils import (
     pivot_cd_matrix,
     save_results_csv,
     validate_dataframe,
+)
+from litho_sim.analysis.stochastics import (
+    CDUniformity,
+    DefectCounts,
+    FailureStats,
+    LineRoughness,
+    count_defects,
+    edge_positions,
+    failure_rate,
+    measure_lcdu,
+    measure_line_roughness,
 )
 from litho_sim.analysis.process_window import (
     calibrate_dose_to_size,
@@ -29,4 +41,7 @@ __all__ = [
     "compute_exposure_latitude", "compute_meef", "compute_nils",
     "compute_process_window", "evaluate_cd", "in_spec",
     "run_full_analysis", "sweep_dose_focus",
+    "CDUniformity", "DefectCounts", "FailureStats", "LineRoughness",
+    "count_defects", "edge_positions", "failure_rate", "measure_lcdu",
+    "measure_line_roughness",
 ]

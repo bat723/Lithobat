@@ -456,7 +456,13 @@ class Stack:
             )
             return
         dist = distance_transform_edt(~nucleate, sampling=(self.dz, px, px))
-        shell = (self.mat == VACUUM) & (dist <= thickness)
+        # The transform's distances come out of a square root, so a shell at
+        # an exact voxel multiple can land one ULP above the requested
+        # thickness — and a "12 nm" film on a 4 nm grid quietly lost its
+        # last shell and deposited 8 nm, while 16 nm (a power-of-two
+        # multiple, exact in float) deposited 16. One part in a billion is
+        # far below any physical tolerance and exactly covers the rounding.
+        shell = (self.mat == VACUUM) & (dist <= thickness * (1.0 + 1e-9))
         self.fill(shell, m)
         selective = "" if seeds is None else " on " + _names_of(seeds)
         self.history.append(

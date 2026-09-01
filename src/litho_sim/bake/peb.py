@@ -41,7 +41,22 @@ def apply_peb(
     -------
     NDArray[np.float64]
         Latent image after PEB, values in [0, 1].
+
+    Raises
+    ------
+    ValueError
+        If ``pac_map`` is not 2-D, ``diffusion_sigma`` is negative, or
+        ``pixel_size`` is not positive.
     """
+    if pac_map.ndim != 2:
+        raise ValueError(
+            f"apply_peb expects a 2-D (ny, nx) map, got ndim={pac_map.ndim}; "
+            "use apply_peb_3d for volumes."
+        )
+    if diffusion_sigma < 0:
+        raise ValueError(f"diffusion_sigma must be >= 0, got {diffusion_sigma!r}")
+    if pixel_size <= 0:
+        raise ValueError(f"pixel_size must be > 0, got {pixel_size!r}")
     sigma_px = diffusion_sigma / pixel_size
     if sigma_px < 1e-3:
         logger.debug("PEB: σ_px=%.4f too small – skipping diffusion.", sigma_px)
@@ -79,9 +94,30 @@ def apply_peb_3d(
     -------
     NDArray
         Diffused latent image.
+
+    Raises
+    ------
+    ValueError
+        If ``latent`` is not 3-D, either diffusion length is negative, or
+        the grid spacings are not positive.
     """
+    if latent.ndim != 3:
+        raise ValueError(
+            f"apply_peb_3d expects a 3-D (nz, ny, nx) volume, got "
+            f"ndim={latent.ndim}; use apply_peb for 2-D maps."
+        )
     s_lat = resist.diffusion_sigma
     s_ver = s_lat if sigma_z is None else sigma_z
+    if s_lat < 0 or s_ver < 0:
+        raise ValueError(
+            f"diffusion lengths must be >= 0, got lateral={s_lat!r}, "
+            f"vertical={s_ver!r}"
+        )
+    if grid.pixel_size <= 0 or grid.dz <= 0:
+        raise ValueError(
+            f"grid spacings must be > 0, got pixel_size={grid.pixel_size!r}, "
+            f"dz={grid.dz!r}"
+        )
     if s_lat <= 0 and s_ver <= 0:
         return latent.copy()
     sigma = (s_ver / grid.dz, s_lat / grid.pixel_size, s_lat / grid.pixel_size)

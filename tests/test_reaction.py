@@ -146,3 +146,16 @@ def test_spacing_length_is_checked():
     with pytest.raises(ValueError, match="spacing has"):
         bake_reaction_diffusion(np.ones((4, 4)), 4e-9, 1.0, 1e-17,
                                 spacing=(1e-9, 1e-9, 1e-9))
+
+
+def test_array_quencher_matches_uniform_scalar():
+    """A quencher *field* that happens to be uniform must reproduce the scalar
+    path bit-for-bit — the seam the stochastic sampler feeds through."""
+    field = _gaussian_2d(48, 5.0)
+    kwargs = dict(pixel_size=4e-9, bake_time=2.0, D_acid=2e-18,
+                  k_quench=5.0, k_amp=0.2)
+    scalar = bake_reaction_diffusion(field, quencher=0.3, **kwargs)
+    array = bake_reaction_diffusion(field, quencher=np.full_like(field, 0.3),
+                                    **kwargs)
+    for key in ("acid", "quencher", "protected"):
+        assert np.array_equal(scalar[key], array[key])

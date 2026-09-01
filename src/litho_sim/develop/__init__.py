@@ -8,6 +8,10 @@ when the vector-imaging work lands; import from this package, not the
 modules, to stay insulated from that split.
 """
 
+from litho_sim.develop.front import (
+    arrival_time,
+    develop_front,
+)
 from litho_sim.develop.profile import (
     CLEARED_FRACTION,
     SEALED_FRACTION,
@@ -18,6 +22,7 @@ from litho_sim.develop.profile import (
 )
 from litho_sim.develop.resist import (
     dill_exposure,
+    feature_edges,
     just_clearing_time,
     mack_development_rate,
     measure_cd_1d,
@@ -25,6 +30,11 @@ from litho_sim.develop.resist import (
     remaining_thickness,
     simulate_resist,
     threshold_development,
+)
+from litho_sim.develop.stochastic import (
+    StochasticResult,
+    add_edge_roughness,
+    stochastic_trials,
 )
 from litho_sim.develop.resist3d import (
     add_standing_waves,
@@ -42,8 +52,11 @@ from litho_sim.develop.resist3d import (
 
 __all__ = [
     "remaining_thickness", "just_clearing_time",
-    "dill_exposure", "mack_development_rate", "measure_cd_1d", "measure_cd_2d",
+    "dill_exposure", "feature_edges", "mack_development_rate",
+    "measure_cd_1d", "measure_cd_2d",
     "simulate_resist", "threshold_development",
+    "arrival_time", "develop_front",
+    "StochasticResult", "add_edge_roughness", "stochastic_trials",
     "add_standing_waves", "apply_absorption", "apply_vertical_interference",
     "develop_3d", "effective_defocus", "exposure_volume", "focus_reference_depth",
     "print_resist_3d", "sidewall_angle", "tmm_standing_waves", "write_resist_to_stack",
