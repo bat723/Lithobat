@@ -45,7 +45,7 @@ def _fast_model(resist_model: str = "threshold") -> ParameterModel:
 
 
 def test_new_groups_exist_and_are_ordered():
-    assert "Chemistry" in GROUPS and "Stochastic" in GROUPS
+    assert "Chemistry" in GROUPS and "Edge roughness" in GROUPS
 
 
 def test_chemistry_knobs_reach_resist_config():

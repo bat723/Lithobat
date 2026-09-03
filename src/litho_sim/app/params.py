@@ -141,20 +141,20 @@ PATTERNS = ("lines and spaces", "contacts", "isolated line", "checkerboard")
 SPECS: tuple[ParamSpec, ...] = (
     # -- mask ---------------------------------------------------------
     ParamSpec("pattern", "Pattern", "choice", "lines and spaces",
-              choices=PATTERNS, group="Mask", target="mask",
+              choices=PATTERNS, group="Pattern", target="mask",
               stage="mask",
               help="Which test structure to image."),
     ParamSpec("pitch", "Pitch", "float", 200.0, 40.0, 800.0, 5.0, "nm", 1e-9,
-              group="Mask", target="mask",
+              group="Pattern", target="mask",
               stage="mask",
               help="Centre-to-centre period of the drawn features."),
     ParamSpec("cd", "Drawn CD", "float", 100.0, 20.0, 400.0, 5.0, "nm", 1e-9,
-              group="Mask", target="mask",
+              group="Pattern", target="mask",
               stage="mask",
               help="Width of the bright (transmitting) feature."),
     ParamSpec("mask_type", "Mask type", "choice", "binary",
               choices=("binary", "att-psm"),
-              group="Mask", target="mask", stage="mask",
+              group="Pattern", target="mask", stage="mask",
               help="binary = chrome on glass. att-psm = attenuated phase "
                    "shift: dark regions leak 6% at 180°, whose destructive "
                    "interference steepens the image edge."),
@@ -258,10 +258,16 @@ SPECS: tuple[ParamSpec, ...] = (
               help="'clear' references the open-frame dose, which is what "
                    "makes threshold comparable across polarisations."),
 
-    # -- resist -------------------------------------------------------
+    # -- the resist chain ---------------------------------------------
+    # Grouped by the step that *reads* each knob, which is also the tab it
+    # appears on: Film and Chemistry describe the coated resist, Exposure
+    # what the scanner does to it, PEB and Reaction-diffusion the bake,
+    # Develop the dissolution. The stage is a separate question from the
+    # tab — every one of these is stage="resist" (or "scale" for dose)
+    # because none can touch the Abbe sum.
     ParamSpec("resist_model", "Resist model", "choice", "threshold",
               choices=("threshold", "mack", "car"),
-              group="Resist", target="resist",
+              group="Film", target="resist",
               stage="resist",
               help="threshold cuts the diffused aerial image at Threshold. "
                    "mack runs Dill exposure → PEB → Mack dissolution. car "
@@ -270,18 +276,18 @@ SPECS: tuple[ParamSpec, ...] = (
                    "and develops the protected fraction. mack and car read "
                    "Develop threshold and Develop time, not Threshold."),
     ParamSpec("threshold", "Threshold", "float", 0.30, 0.05, 0.95, 0.01,
-              group="Resist", target="resist",
+              group="Develop", target="resist",
               stage="resist",
               help="Clearing threshold for the threshold model. THE CD "
                    "calibration knob — the default prints well under the "
                    "drawn CD at 1:1. The mack and car models cut on PAC "
                    "via Develop threshold instead."),
     ParamSpec("dose", "Dose", "float", 1.00, 0.20, 3.00, 0.05,
-              group="Resist", target="resist",
+              group="Exposure", target="resist",
               stage="scale",
               help="Relative exposure dose."),
     ParamSpec("diffusion_sigma", "PEB diffusion", "float", 0.0, 0.0, 60.0,
-              1.0, "nm", 1e-9, group="Resist", target="resist",
+              1.0, "nm", 1e-9, group="PEB", target="resist",
               stage="resist",
               help="Acid diffusion length during post-exposure bake, applied "
                    "to the aerial image before thresholding. Defaults to 0 so "
@@ -289,22 +295,20 @@ SPECS: tuple[ParamSpec, ...] = (
                    "image and shrink the printed feature."),
     ParamSpec("tone", "Tone", "choice", "positive",
               choices=("positive", "negative"),
-              group="Resist", target="resist",
+              group="Film", target="resist",
               stage="resist",
               help="Which part of the resist survives development."),
-    # Read by the 2-D mack/car models *and* the 3-D develop step — which is
-    # why they live in the always-visible Resist section with stage="resist"
-    # (the same dual life `tone` has always led), not in the 3-D-only
-    # Profile group they started in.
+    # Read by the 2-D mack/car models *and* the 3-D develop step, so they
+    # carry stage="resist" (the same dual life `tone` has always led).
     ParamSpec("mack_Mth", "Develop threshold", "float", 0.50, 0.05, 0.95, 0.01,
-              group="Resist", target="resist",
+              group="Develop", target="resist",
               stage="resist",
               help="Where development cuts in *chemistry* space — PAC after "
                    "the bake (mack), protected fraction (car), and the same "
                    "for the 3-D depth path. A different physical quantity "
                    "from the intensity Threshold above."),
     ParamSpec("develop_time", "Develop time", "float", 5.0, 0.5, 30.0, 0.5, "s",
-              group="Resist", target="resist",
+              group="Develop", target="resist",
               stage="resist",
               help="How long the developer runs, for every finite-rate model "
                    "(mack, car, 3-D front). The scale that matters is "
@@ -313,9 +317,9 @@ SPECS: tuple[ParamSpec, ...] = (
                    "over-develop."),
 
     # -- chemistry ----------------------------------------------------
-    # The CAR block: read by the car model, the Stochastics tab, and (for
-    # the first two) the mack model. All stage="resist" — none of them can
-    # touch the Abbe sum.
+    # The CAR formulation: read by the car model, the stochastic trials, and
+    # (for the first two) the mack model. Bake kinetics sit under their own
+    # Reaction-diffusion group on the Bake tab.
     ParamSpec("dose_nominal", "Dose to clear", "float", 30.0, 5.0, 100.0, 1.0,
               "mJ/cm²", group="Chemistry", target="resist",
               stage="resist",
@@ -341,47 +345,47 @@ SPECS: tuple[ParamSpec, ...] = (
                    "sub-threshold acid during the bake — where CAR contrast "
                    "comes from. car model only."),
     ParamSpec("bake_time", "PEB time", "float", 60.0, 5.0, 120.0, 5.0, "s",
-              group="Chemistry", target="resist",
+              group="Reaction-diffusion", target="resist",
               stage="resist",
               help="Reaction–diffusion bake duration (car). The mack model "
                    "bakes with the PEB diffusion length instead."),
     ParamSpec("D_acid", "Acid D", "float", 4.0, 0.1, 20.0, 0.1, "nm²/s",
-              1e-18, group="Chemistry", target="resist",
+              1e-18, group="Reaction-diffusion", target="resist",
               stage="resist",
               help="Acid diffusivity during the car bake. √(2Dt) is the "
                    "diffusion length — 22 nm at the defaults."),
     ParamSpec("k_quench", "Quench rate", "float", 20.0, 0.0, 100.0, 1.0,
-              "1/s", group="Chemistry", target="resist",
+              "1/s", group="Reaction-diffusion", target="resist",
               stage="resist",
               help="Acid–base neutralisation rate, per unit concentration "
                    "in PAG₀ units. The term that turns the bake from a blur "
                    "into a threshold."),
     ParamSpec("k_amp", "Deprotection", "float", 0.05, 0.0, 0.50, 0.01, "1/s",
-              group="Chemistry", target="resist",
+              group="Reaction-diffusion", target="resist",
               stage="resist",
               help="Catalytic deprotection rate per unit acid. k × acid × "
                    "bake time of a few is a well-amplified resist."),
     ParamSpec("electron_blur_sigma", "e⁻ blur", "float", 0.0, 0.0, 10.0, 0.5,
-              "nm", 1e-9, group="Chemistry", target="resist",
+              "nm", 1e-9, group="Exposure", target="resist",
               stage="resist",
               help="Photoelectron cascade range — where EUV acid actually "
                    "appears, a few nm from the absorption site. 0 for DUV; "
                    "~4 nm at 13.5 nm."),
 
-    # -- stochastic (cosmetic) ----------------------------------------
+    # -- edge roughness (cosmetic) ------------------------------------
     ParamSpec("use_stochastic", "Edge roughness", "bool", False,
-              group="Stochastic", target="resist",
+              group="Edge roughness", target="resist",
               stage="resist",
               help="Stamp correlated line-edge roughness onto the developed "
                    "image. Cosmetic — a statistical texture with the σ and ξ "
                    "below. Physical noise from photon and molecule counting "
                    "is the Stochastics tab."),
     ParamSpec("stochastic_sigma", "LER σ", "float", 1.0, 0.2, 10.0, 0.2,
-              "nm", 1e-9, group="Stochastic", target="resist",
+              "nm", 1e-9, group="Edge roughness", target="resist",
               stage="resist",
               help="1-σ edge displacement of the cosmetic roughness."),
     ParamSpec("stochastic_corr_length", "LER ξ", "float", 25.0, 5.0, 100.0,
-              5.0, "nm", 1e-9, group="Stochastic", target="resist",
+              5.0, "nm", 1e-9, group="Edge roughness", target="resist",
               stage="resist",
               help="Correlation length along the edge — what makes the "
                    "result look like a SEM image rather than static."),
@@ -396,27 +400,29 @@ SPECS: tuple[ParamSpec, ...] = (
               stage="mask",
               help="Physical size of one pixel."),
 
-    # -- 3-D profile --------------------------------------------------
-    # Shown only in 3-D mode. None of these exist on the 2-D path, and all of
-    # them previously fell back to dataclass defaults with no control at all.
+    # -- the 3-D profile branch ---------------------------------------
+    # None of these exist on the 2-D path, and all of them once fell back to
+    # dataclass defaults with no control at all. Each sits on the tab of the
+    # step that reads it — film discretisation with the Film, standing waves
+    # with the Exposure, the depth develop model with Develop.
     ParamSpec("thickness", "Film thickness", "float", 100.0, 30.0, 300.0, 10.0,
-              "nm", 1e-9, group="Profile", target="resist",
+              "nm", 1e-9, group="Film", target="resist",
               stage="profile3d",
               help="Resist thickness. With dz, this sets how many voxels deep "
                    "the developed solid is."),
     ParamSpec("n_z_slices", "Optical planes", "int", 11, 3, 41, 2,
-              group="Profile", target="grid",
+              group="Film", target="grid",
               stage="profile3d",
               help="THE 3-D cost knob — one full Abbe sum per plane, then "
                    "interpolated onto the voxel grid."),
     ParamSpec("dz", "Voxel height", "float", 2.0, 1.0, 8.0, 0.5, "nm", 1e-9,
-              group="Profile", target="grid",
+              group="Film", target="grid",
               stage="profile3d",
               help="Vertical voxel size. Must stay well under the "
                    "standing-wave period, about 57 nm at 193 nm."),
     ParamSpec("develop_model", "Develop model", "choice", "threshold",
               choices=("threshold", "mack", "front"),
-              group="Profile", target="resist",
+              group="Depth develop", target="resist",
               stage="profile3d",
               help="'threshold' cuts at a PAC level and keeps whatever the "
                    "developer can reach from the top; 'mack' propagates a "
@@ -425,44 +431,44 @@ SPECS: tuple[ParamSpec, ...] = (
                    "itself, so it can undercut — the only one of the three "
                    "that can produce a T-top or a foot, and the slowest."),
     ParamSpec("inhibition_depth", "Inhibition depth", "float", 0.0, 0.0, 40.0, 1.0, "nm",
-              group="Profile", target="resist",
+              group="Depth develop", target="resist",
               stage="profile3d",
               help="Depth of the slow-dissolving surface layer. Solvent "
                    "entering unswollen glassy polymer is genuinely transport-"
                    "limited, unlike the rest of development; this is the "
                    "standard empirical stand-in. 0 disables it."),
     ParamSpec("inhibition_rate", "Surface rate", "float", 1.0, 0.02, 1.0, 0.02,
-              group="Profile", target="resist",
+              group="Depth develop", target="resist",
               stage="profile3d",
               help="Dissolution rate at the very top surface as a fraction "
                    "of bulk. Needs develop_model='front' to show a T-top: a "
                    "slow cap alone just shifts a ray-marched profile down."),
     ParamSpec("standing_waves", "Standing waves", "bool", False,
-              group="Profile", target="resist",
+              group="Through the film", target="resist",
               stage="profile3d",
               help="Interfere the downward wave with its substrate "
                    "reflection — the scalloped sidewall, and the reason PEB "
                    "and BARCs exist."),
     ParamSpec("substrate_reflectance", "Substrate R", "float", 0.35, 0.0, 0.6,
-              0.05, group="Profile", target="resist",
+              0.05, group="Through the film", target="resist",
               stage="profile3d",
               help="Amplitude reflectance under the resist. Only bites with "
                    "standing waves on; 0 is a perfect BARC."),
     ParamSpec("focus_reference", "Focus at", "choice", "mid",
               choices=("top", "mid", "bottom"),
-              group="Profile", target="resist",
+              group="Through the film", target="resist",
               stage="profile3d",
               help="Which plane in the film the defocus setting refers to."),
 
     # -- 3-D view (no physics) ----------------------------------------
     ParamSpec("z_exaggeration", "Z exaggeration", "float", 2.0, 1.0, 6.0, 0.5,
-              group="Profile", target="view",
+              group="3-D view", target="view",
               stage="view",
               help="Stretch the depth axis for legibility. Redraw only — "
                    "never recomputes."),
     ParamSpec("render_mode", "Render as", "choice", "surface",
               choices=("surface", "solid"),
-              group="Profile", target="view",
+              group="3-D view", target="view",
               stage="view",
               help="'surface' draws the resist top as a height field — exact "
                    "here, since development has no lateral component, and "
@@ -470,7 +476,7 @@ SPECS: tuple[ParamSpec, ...] = (
                    "which is what a wafer stack with freestanding features "
                    "would need."),
     ParamSpec("downsample", "Render detail", "int", 2, 1, 4, 1,
-              group="Profile", target="view",
+              group="3-D view", target="view",
               stage="view",
               help="Decimation for the 3-D render. Drawing dominates the "
                    "cost of the whole 3-D path, so this is the knob that "
@@ -479,11 +485,40 @@ SPECS: tuple[ParamSpec, ...] = (
 
 SPECS_BY_KEY: dict[str, ParamSpec] = {s.key: s for s in SPECS}
 
-#: Section order for the control panel.
-GROUPS: tuple[str, ...] = (
-    "Mask", "Optics", "Vector", "Mask 3-D", "Resist", "Chemistry",
-    "Stochastic", "Grid", "Profile",
+#: The step tabs, left to right in the order the physics runs, and the
+#: control sections each one carries. A knob's ``group`` names its section;
+#: this table is what puts the section on a tab. Moving a knob between tabs
+#: is therefore one word in its spec — the placement of the resist chain is
+#: a first pass and expected to be revised.
+TAB_GROUPS: dict[str, tuple[str, ...]] = {
+    "Mask": ("Pattern", "Mask 3-D", "Grid"),
+    "Source": ("Optics", "Vector"),
+    "Resist": ("Film", "Chemistry"),
+    "Expose": ("Exposure", "Through the film"),
+    "Bake": ("PEB", "Reaction-diffusion"),
+    "Develop": ("Develop", "Depth develop", "Edge roughness", "3-D view"),
+}
+
+#: Tab order, as a tuple.
+TABS: tuple[str, ...] = tuple(TAB_GROUPS)
+
+#: Every section, in tab order — the flat view of :data:`TAB_GROUPS`.
+GROUPS: tuple[str, ...] = tuple(g for gs in TAB_GROUPS.values() for g in gs)
+
+#: Sections describing only the depth-resolved (3-D) profile. They are shown
+#: everywhere — a 3-D setting is a setting, not a mode — but a panel may want
+#: to label them, and the tests check they are all accounted for.
+GROUPS_3D: tuple[str, ...] = (
+    "Through the film", "Depth develop", "3-D view",
 )
+
+
+def tab_of(group: str) -> str:
+    """Which step tab a control section lives on."""
+    for tab, groups in TAB_GROUPS.items():
+        if group in groups:
+            return tab
+    raise KeyError(f"section '{group}' is on no tab")
 
 
 def mask_model_availability(
@@ -537,9 +572,6 @@ def mask_model_availability(
         ),
         "fdtd": fdtd_reason,
     }
-
-#: Sections shown only when the Develop tab is in 3-D mode.
-MODE_3D_GROUPS: tuple[str, ...] = ("Profile",)
 
 #: Parameters the 3-D *develop* step reads but the latent image does not.
 #: Everything before ``develop_3d`` — the Abbe sums, the absorption march,

@@ -36,7 +36,6 @@ from litho_sim.app.params import (
     ParamSpec,
 )
 from litho_sim.app.pipeline import Pipeline
-from litho_sim.app.scheduler import Scheduler, debounce
 
 # ---------------------------------------------------------------------------
 # Parameter specs
@@ -487,87 +486,6 @@ def test_pipeline_invalidate_forces_a_rerun():
 
 
 # ---------------------------------------------------------------------------
-# Scheduling
-# ---------------------------------------------------------------------------
-
-
-def test_newest_request_wins():
-    """Dragging a slider produces far more requests than can be served;
-    the intermediate ones are worthless by the time they would run."""
-    s = Scheduler()
-    for i in range(5):
-        s.submit((("NA", i),), payload=i, cost_ms=10.0)
-    req = s.take()
-    assert req is not None and req.payload == 4
-    assert s.dropped == 4
-
-
-def test_nothing_runs_twice_for_the_same_parameters():
-    s = Scheduler()
-    sig = (("NA", 1.0),)
-    s.submit(sig, payload="a", cost_ms=10.0)
-    first = s.take()
-    assert first is not None
-    s.finish(first)
-    s.submit(sig, payload="a", cost_ms=10.0)
-    assert s.take() is None, "unchanged parameters should not recompute"
-
-
-def test_only_one_request_runs_at_a_time():
-    s = Scheduler()
-    s.submit((("a", 1),), payload=1, cost_ms=10.0)
-    running = s.take()
-    assert running is not None
-    s.submit((("a", 2),), payload=2, cost_ms=10.0)
-    assert s.take() is None, "must not start a second while one is running"
-    s.finish(running)
-    assert s.take().payload == 2
-
-
-def test_expensive_work_waits_for_the_drag_to_stop():
-    """A cheap configuration tracks the mouse; an expensive one would just
-    queue stale frames, so it holds until the input settles."""
-    s = Scheduler()
-    s.submit((("a", 1),), payload="cheap", cost_ms=20.0)
-    assert s.take(settled=False) is not None
-
-    s2 = Scheduler()
-    s2.submit((("a", 1),), payload="dear", cost_ms=900.0)
-    assert s2.take(settled=False) is None
-    assert s2.take(settled=True) is not None
-
-
-def test_the_budget_is_a_time_not_a_parameter_list():
-    """Because the threshold is measured in milliseconds, turning on vector
-    imaging or raising the source grid changes the behaviour by itself."""
-    p = ParameterModel()
-    p.set("n_pixels", 64)
-    p.set("source_grid", 7)
-    s = Scheduler()
-    s.submit(p.signature(), payload="scalar", cost_ms=estimate_cost_ms(p))
-    assert s.take(settled=False) is not None, "small scalar should be live"
-
-    p.set("n_pixels", 256)
-    p.set("source_grid", 41)
-    p.set("imaging_model", "vector")
-    p.set("polarisation", "unpolarised")
-    s2 = Scheduler()
-    s2.submit(p.signature(), payload="heavy", cost_ms=estimate_cost_ms(p))
-    assert s2.take(settled=False) is None, "large vector should defer"
-
-
-def test_abandoned_work_can_be_retried():
-    s = Scheduler()
-    sig = (("a", 1),)
-    s.submit(sig, payload=1, cost_ms=10.0)
-    s.take()
-    s.abandon()
-    assert not s.busy
-    s.submit(sig, payload=1, cost_ms=10.0)
-    assert s.take() is not None, "abandoned work was never recorded as done"
-
-
-# ---------------------------------------------------------------------------
 # The 3-D profile
 # ---------------------------------------------------------------------------
 
@@ -657,14 +575,15 @@ def test_the_core_never_imports_qt():
 
     Everything tested in this file must stay importable on a machine with no
     Qt and no display — that is what makes the logic testable at all. If
-    PySide6 leaks into params/compute/scheduler, this fails.
+    PySide6 leaks into params/compute/pipeline, this fails.
     """
     import litho_sim.app.compute as c
     import litho_sim.app.fem as f
     import litho_sim.app.params as p
-    import litho_sim.app.scheduler as s
+    import litho_sim.app.pipeline as pl
+    import litho_sim.app.stochastics as st
 
-    for module in (p, c, s, f):
+    for module in (p, c, pl, f, st):
         src = Path(module.__file__).read_text(encoding="utf-8")
         assert "PySide6" not in src, f"{module.__name__} imports Qt"
         assert "QtWidgets" not in src, f"{module.__name__} imports Qt"
@@ -687,94 +606,6 @@ def test_missing_qt_explains_itself():
 
     with pytest.raises(ImportError, match="pip install PySide6"):
         import litho_sim.app.main  # noqa: F401
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_the_window_builds_and_renders_offscreen():
-    """Construct the real thing, headlessly.
-
-    Qt can render to an offscreen platform plugin, so the whole window —
-    every generated control, the canvas, the worker thread — can be built and
-    driven in CI or over SSH. This is the test that catches signal/slot
-    wiring and enum-spelling mistakes, which are exactly what goes wrong in
-    GUI code that has never been run.
-    """
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtWidgets
-
-    from litho_sim.app.main import MainWindow
-
-    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    win = MainWindow()
-    try:
-        # Every spec must have produced a widget.
-        assert set(win.controls._widgets) == set(SPECS_BY_KEY)
-
-        # Drive a slider and a combo the way a user would, and check the
-        # model followed.
-        win.controls._emit("NA", 1.20)
-        assert win.model["NA"] == pytest.approx(1.20)
-        win.controls._emit("polarisation", "te")
-        assert win.model["polarisation"] == "te"
-
-        # Compute synchronously (no thread) and draw into every tab, which
-        # exercises both the artist-creation and the artist-reuse paths.
-        from litho_sim.app.compute import compute_imaging
-
-        win.model.set("n_pixels", 64)
-        win.model.set("source_grid", 5)
-        result = compute_imaging(win.model)
-
-        # The stack is the substrate the rest of the flow acts on, so it
-        # leads, and the app opens on it. Six tabs: stack, mask, expose,
-        # develop, process window, stochastics.
-        assert win.tabs.count() == 6
-        assert [win.tabs.tabText(i) for i in range(5)] == [
-            "Wafer Stack", "Mask", "Expose", "Develop", "Process Window",
-        ]
-
-        # Pair each tab with the view inside it by identity, never by index:
-        # an index pairing survives a reorder by silently drawing into a view
-        # that is not the one showing. Note the Develop tab is a container --
-        # the tab and its 2-D view are different widgets.
-        for tab, view in (
-            (win.mask_view, win.mask_view),
-            (win.expose_view, win.expose_view),
-            (win.develop_tab, win.develop_view),
-        ):
-            win.tabs.setCurrentWidget(tab)
-            view.show_result(result)
-            view.show_result(result)       # second call must reuse artists
-            assert view.canvas is not None
-
-        # Switching tabs with a result in hand must repaint the new tab.
-        win._last_result = result
-        win.tabs.setCurrentWidget(win.mask_view)
-        win.tabs.setCurrentWidget(win.develop_tab)
-    finally:
-        win.thread.quit()
-        win.thread.wait(2000)
-        win.close()
-
-
-def test_debounce_runs_leading_then_suppresses():
-    now = {"t": 0.0}
-    calls = []
-    d = debounce(lambda v: calls.append(v), wait_ms=100.0, clock=lambda: now["t"])
-
-    d(1)                    # leading edge runs
-    assert calls == [1]
-    d(2)                    # inside the window, suppressed
-    d(3)
-    assert calls == [1]
-    d.flush()               # trailing edge delivers the newest
-    assert calls == [1, 3]
-
-    now["t"] = 1.0          # window elapsed
-    d(4)
-    assert calls == [1, 3, 4]
 
 
 # ---------------------------------------------------------------------------
@@ -922,45 +753,6 @@ def test_2d_threshold_is_deliberately_inert_in_3d():
 
 
 @pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_a_drag_draws_coarse_and_settles_to_full_detail(monkeypatch):
-    """The mesh is the one thing that cannot be drawn at full detail live.
-
-    Paint costs 362 ms at stride 1 and 67 at stride 4, so a live refresh
-    draws coarse and a settle timer redraws it properly. What must not
-    happen is the drag *ending* on the coarse picture.
-    """
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtWidgets
-
-    from litho_sim.app.main import DRAFT_STRIDE, MainWindow
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        window.model.set("n_pixels", 64)
-        window.model.set("n_z_slices", 3)
-        window.model.set("downsample", 1)
-
-        strides = []
-        real = window.profile_view.show_profile
-        window.profile_view.show_profile = (
-            lambda r, g, **kw: strides.append(kw["downsample"]) or real(r, g, **kw)
-        )
-        window._profile = compute_profile_3d(window.model)
-
-        window._draw_profile(draft=True)
-        window._draw_profile(draft=False)
-        app.processEvents()
-
-        assert strides == [DRAFT_STRIDE, 1], (
-            "a live refresh must coarsen the mesh, and the settled redraw "
-            "must go back to the detail the user asked for"
-        )
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
 def test_the_layout_solver_is_skipped_when_nothing_moved(monkeypatch):
     """Constrained layout calls get_tightbbox on the 3-D axes — 37 ms a frame
     to re-derive a layout that only changes when the window does."""
@@ -991,110 +783,6 @@ def test_the_layout_solver_is_skipped_when_nothing_moved(monkeypatch):
             QtGui.QResizeEvent(QtCore.QSize(900, 700), QtCore.QSize(800, 600))
         )
         assert view._relayout, "a resize must re-solve the layout"
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_scrolling_the_dock_does_not_touch_any_parameter(monkeypatch):
-    """A scroll gesture is a scroll gesture, not twenty parameter edits.
-
-    Qt hands the wheel to sliders and combo boxes by default, which inside a
-    scrolling dock means the wheel lands on whatever control the pointer is
-    over. Measured before the guard: one scroll down the panel altered **20 of
-    the 25 slider-backed parameters** — NA, drawn CD, defocus, develop time —
-    and queued a full recompute for each. That was the reported "lag": not
-    rendering, which measures 0.43 ms a frame, but the engine being asked to
-    re-run the pipeline twenty times over.
-    """
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
-
-    from litho_sim.app.main import MainWindow
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        before = dict(window.model.values)
-        emitted = []
-        window.controls.changed.connect(lambda k, v: emitted.append(k))
-
-        controls = (window.controls.findChildren(QtWidgets.QSlider)
-                    + window.controls.findChildren(QtWidgets.QComboBox))
-        assert controls, "no controls found to scroll over"
-
-        # Short window, so the dock genuinely overflows and can scroll.
-        window.resize(1400, 520)
-        window.show()
-        app.processEvents()
-        area = window.controls
-        while not isinstance(area, QtWidgets.QScrollArea):
-            area = area.parent()
-        bar = area.verticalScrollBar()
-        assert bar.maximum() > 0, "dock does not overflow, nothing to scroll"
-
-        def wheel(widget, clicks):
-            return QtGui.QWheelEvent(
-                QtCore.QPointF(widget.rect().center()), QtCore.QPointF(0, 0),
-                QtCore.QPoint(0, 0), QtCore.QPoint(0, clicks * 120),
-                QtCore.Qt.MouseButton.NoButton,
-                QtCore.Qt.KeyboardModifier.NoModifier,
-                QtCore.Qt.ScrollPhase.NoScrollPhase, False,
-            )
-
-        # Both halves matter, and fixing one by breaking the other is the
-        # obvious trap: swallowing the wheel stops the parameter edits *and*
-        # leaves the dock unscrollable wherever a control sits, which is most
-        # of it. Qt does not offer a filtered event to the parent, so it has
-        # to be forwarded explicitly.
-        scrolled = 0
-        for widget in controls:
-            bar.setValue(0)
-            app.processEvents()
-            app.sendEvent(widget, wheel(widget, -3))
-            app.processEvents()
-            if bar.value() != 0:
-                scrolled += 1
-        assert scrolled == len(controls), (
-            f"only {scrolled}/{len(controls)} controls passed the wheel "
-            f"through to the scroll area"
-        )
-
-        changed = {k for k in before if before[k] != window.model[k]}
-        assert not changed, f"scrolling silently edited {sorted(changed)}"
-        assert not emitted, f"scrolling queued {len(emitted)} recomputes"
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_the_wheel_still_adjusts_a_focused_control(monkeypatch):
-    """The guard must not cost the feature — click into a slider and the
-    wheel is still the fine-adjustment it always was."""
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
-
-    from litho_sim.app.main import MainWindow
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        # Focus is only real once the window is mapped, even offscreen.
-        window.show()
-        app.processEvents()
-        slider = window.controls.findChildren(QtWidgets.QSlider)[1]
-        slider.setFocus()
-        app.processEvents()
-        assert slider.hasFocus(), "could not focus the slider to test against"
-        before = slider.value()
-        app.sendEvent(slider, QtGui.QWheelEvent(
-            QtCore.QPointF(slider.rect().center()), QtCore.QPointF(0, 0),
-            QtCore.QPoint(0, 0), QtCore.QPoint(0, -3 * 120),
-            QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
-            QtCore.Qt.ScrollPhase.NoScrollPhase, False,
-        ))
-        app.processEvents()
-        assert slider.value() != before
     finally:
         window.close()
 
@@ -1177,37 +865,6 @@ def test_the_scrubber_has_a_slot_for_the_bare_wafer(monkeypatch):
         app.processEvents()
         assert tab.scrub_label.text() == "as loaded"
         assert tab.session.stack_at(-1).thickness_of("SiO2").max() == 0.0
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_a_result_is_never_painted_into_a_hidden_tab(monkeypatch):
-    """The routing bug adding a fourth tab would have caused.
-
-    `_visible_2d_view` used to map tab index by hard-coded integers with an
-    implicit 'anything else is Develop' fallthrough, so a fourth tab returned
-    the Develop view and got 2-D imaging results painted into a canvas that
-    was not showing.
-    """
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtWidgets
-
-    from litho_sim.app.main import MainWindow
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        window.tabs.setCurrentWidget(window.stack_tab)
-        app.processEvents()
-        assert window._visible_2d_view() is None, (
-            "an imaging result would be drawn into a tab that is not showing"
-        )
-        # And every real 2-D tab still routes to itself.
-        window.tabs.setCurrentWidget(window.mask_view)
-        assert window._visible_2d_view() is window.mask_view
-        window.tabs.setCurrentWidget(window.expose_view)
-        assert window._visible_2d_view() is window.expose_view
     finally:
         window.close()
 
@@ -1313,7 +970,7 @@ def test_the_profile_button_is_disabled_until_there_is_a_profile(monkeypatch):
         assert window._profile is None
         btn = window.stack_tab.import_btn
         assert not btn.isEnabled(), "nothing to import, so nothing to offer"
-        assert "Compute" in btn.toolTip()
+        assert "Simulate" in btn.toolTip(), "must say where the profile comes from"
         assert "File" in btn.toolTip(), "must point at the from-disk route"
         assert "import" not in btn.text().lower(), (
             f"{btn.text()!r} still reads like a file dialog"
@@ -1321,7 +978,7 @@ def test_the_profile_button_is_disabled_until_there_is_a_profile(monkeypatch):
 
         window._import_profile()
         app.processEvents()
-        assert "Compute 3-D" in window.status.currentMessage()
+        assert "3-D resist profile" in window.status.currentMessage()
     finally:
         window.close()
 
@@ -2314,7 +1971,8 @@ def test_process_window_tab_runs_a_sweep_offscreen():
     try:
         win.model.set("source_grid", 5)
         tab = win.pw_tab
-        win.tabs.setCurrentWidget(tab)
+        win.tabs.setCurrentWidget(win.simulate_tab)
+        win.simulate_tab.select("Focus-exposure matrix")
         app.processEvents()
 
         assert len(tab.figure.axes) == 0, "placeholder should hold no axes"

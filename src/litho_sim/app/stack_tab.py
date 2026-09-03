@@ -9,10 +9,15 @@ from litho_sim.app.params import (
     ParameterModel,
 )
 from litho_sim.app.qt import QtCore, QtGui, QtWidgets
-from litho_sim.app.scheduler import SETTLE_MS
 from litho_sim.app.views import StackView
 
 logger = logging.getLogger(__name__)
+
+#: How long an edit has to sit before the flow re-runs, in milliseconds. The
+#: recipe editor is the one place the app still recomputes on its own — a
+#: step append replays one step and the picture should follow the edit — so
+#: this is a trailing-edge debounce over slider drags, and nothing else.
+SETTLE_MS = 180.0
 
 
 class StackTab(QtWidgets.QWidget):
@@ -131,9 +136,9 @@ class StackTab(QtWidgets.QWidget):
         # from a dead control — which is exactly how it was read.
         self.import_btn.setEnabled(False)
         self.import_btn.setToolTip(
-            "Take the developed profile from the Develop tab (3-D mode, after "
-            "Compute) and make it this flow's starting wafer: substrate plus "
-            "patterned resist, ready to etch through.\n\n"
+            "Take the developed 3-D profile (run 3-D resist profile on the "
+            "Simulate tab) and make it this flow's starting wafer: substrate "
+            "plus patterned resist, ready to etch through.\n\n"
             "Not a file dialog — use File ▸ Open wafer to load a saved .npz, "
             "or File ▸ Load device for the GAA and nFET presets."
         )

@@ -71,6 +71,10 @@ class ImagingResult:
     threshold: float
     elapsed_ms: float
     signature: tuple
+    #: What the latent image *is*, in words, so the Bake panel can label its
+    #: axes honestly: intensity for the threshold model, PAC for mack, the
+    #: protected fraction for car — 1 = unexposed for the chemistry two.
+    latent_kind: str = "intensity after PEB"
 
     @property
     def summary(self) -> str:
@@ -79,6 +83,10 @@ class ImagingResult:
             f"CD {cd}    NILS {self.nils:.2f}    "
             f"contrast {self.contrast:.3f}    [{self.elapsed_ms:.0f} ms]"
         )
+
+    @property
+    def cd_text(self) -> str:
+        return "—" if not np.isfinite(self.cd_nm) or self.cd_nm <= 0 else f"{self.cd_nm:.1f} nm"
 
 
 def build_mask(params: ParameterModel) -> NDArray:
@@ -172,6 +180,7 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
             feature="below" if resist_cfg.tone == "positive" else "above",
         )
         shown_threshold = resist_cfg.threshold
+        latent_kind = "intensity after PEB"
     else:
         # Chemistry route — mack or car. simulate_resist owns exposure and
         # bake internally, so it gets the *aerial*: the dose is already in
@@ -203,6 +212,8 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         # The dashed line the cut plot draws sits on the chemistry latent,
         # where the meaningful level is the develop threshold.
         shown_threshold = resist_cfg.mack_Mth
+        latent_kind = ("PAC after bake" if resist_model == "mack"
+                       else "protected fraction after bake")
 
     mid = grid.n_pixels // 2
     cut_aerial = aerial[mid, :]
@@ -242,6 +253,133 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         threshold=float(shown_threshold),
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
         signature=params.signature(),
+        latent_kind=latent_kind,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live previews — the two pictures that are not simulations
+# ---------------------------------------------------------------------------
+#
+# Nothing physical recomputes while a control moves: exposure and development
+# run only when asked, from the Simulate tab. Two pictures are exempt because
+# they are *drawings of the settings* rather than results — the mask as
+# drawn, and the illumination as sampled — and both cost well under a
+# millisecond, so the tab that holds the controls can show them as they change.
+
+
+def mask_preview(params: ParameterModel) -> NDArray[np.float64]:
+    """The drawn pattern as the Mask tab shows it — real-valued, 1 = clear."""
+    mask = build_mask(params)
+    return mask.real if np.iscomplexobj(mask) else mask
+
+
+@dataclass
+class SourcePreview:
+    """The illumination as the Abbe sum will sample it, plus the numbers that
+    say what it can resolve."""
+
+    source: NDArray[np.float64]     # (n, n) on the σ grid, rows η, cols ξ
+    n_points: int                   # source points the Abbe sum will visit
+    order_shift: float | None       # λ/(pitch·NA) in pupil units; None if aperiodic
+    k1: float                       # CD · NA / λ
+    label: str
+
+
+def source_preview(params: ParameterModel) -> SourcePreview:
+    """Build the source on its own grid and work out where the ±1 orders land.
+
+    The picture the Source tab draws is the actual sampling — one pixel per
+    source point on the ``source_grid`` — because that grid is the cost knob
+    and seeing it coarsen is the point. The two dashed circles are the pupil
+    displaced by one diffraction order of the drawn pitch: a source point
+    inside the overlap images the pattern with two beams, one outside it
+    contributes only a DC background, which is the whole reason off-axis
+    illumination exists.
+    """
+    from litho_sim.expose.illumination import build_source
+
+    optics = params.optics()
+    source = build_source(
+        optics.source_grid, optics.source_type,
+        optics.sigma_outer, optics.sigma_inner,
+        **(optics.source_kwargs or {}),
+    )
+    n_points = int(np.count_nonzero(source))
+
+    periodic = params["pattern"] in ("lines and spaces", "contacts", "checkerboard")
+    pitch = params.si("pitch")
+    shift = (optics.wavelength / (pitch * optics.NA)) if periodic and pitch > 0 else None
+    k1 = params.si("cd") * optics.NA / optics.wavelength
+
+    label = (
+        f"{optics.source_type} · σ {optics.sigma_outer:.2f}"
+        + (f"/{optics.sigma_inner:.2f}" if optics.sigma_inner > 0 else "")
+        + f" · {n_points} source points · k₁ {k1:.2f}"
+    )
+    return SourcePreview(
+        source=source, n_points=n_points, order_shift=shift, k1=float(k1),
+        label=label,
+    )
+
+
+@dataclass
+class FilmPreview:
+    """The coated film as the Resist tab sketches it: its geometry, its
+    discretisation, and the exposure curve its chemistry implies."""
+
+    thickness_nm: float
+    dz_nm: float
+    n_voxels: int                   # voxel rows the 3-D develop will use
+    n_planes: int                   # optical planes the 3-D exposure samples
+    plane_z_nm: NDArray[np.float64]
+    dose_axis: NDArray[np.float64]  # mJ/cm²
+    pac: NDArray[np.float64]        # exp(-C·E): PAC left after exposure
+    dose_to_clear: float            # mJ/cm² at relative dose 1
+    dill_C: float                   # noqa: N815 - the engine's own field name
+    resist_model: str
+    tone: str
+    label: str
+
+
+#: Knobs the film sketch reads — the tab redraws it when one of these moves.
+FILM_PREVIEW_KEYS: tuple[str, ...] = (
+    "thickness", "dz", "n_z_slices", "dose_nominal", "dill_C",
+    "resist_model", "tone",
+)
+
+
+def film_preview(params: ParameterModel) -> FilmPreview:
+    """What the coat step produced, without simulating anything.
+
+    Two facts are worth seeing before pressing Run. The film's discretisation
+    — ``n_z_slices`` optical planes interpolated onto ``thickness/dz`` voxel
+    rows — is the 3-D cost and accuracy knob, and is invisible as two
+    numbers. And the Dill exposure curve, :math:`m(E) = e^{-CE}`, is the
+    resist's whole sensitivity in one line: the dose slider on the Expose
+    tab multiplies ``dose_nominal``, so where that lands on the curve is
+    what "dose 1.0" means for this resist.
+    """
+    t_nm = float(params["thickness"])
+    dz_nm = float(params["dz"])
+    n_planes = int(params["n_z_slices"])
+    e0 = float(params["dose_nominal"])
+    c = float(params["dill_C"])
+    dose_axis = np.linspace(0.0, 3.0 * e0, 121)
+    return FilmPreview(
+        thickness_nm=t_nm,
+        dz_nm=dz_nm,
+        n_voxels=max(int(round(t_nm / dz_nm)), 1),
+        n_planes=n_planes,
+        plane_z_nm=np.linspace(0.0, t_nm, n_planes),
+        dose_axis=dose_axis,
+        pac=np.exp(-c * dose_axis),
+        dose_to_clear=e0,
+        dill_C=c,
+        resist_model=str(params["resist_model"]),
+        tone=str(params["tone"]),
+        label=(f"{t_nm:.0f} nm {params['tone']} resist · {params['resist_model']} model · "
+               f"{n_planes} optical planes on {max(int(round(t_nm / dz_nm)), 1)} voxel rows"),
     )
 
 
@@ -299,8 +437,7 @@ def compute_profile_3d(
     """Develop the resist in depth and measure the resulting solid.
 
     Roughly 25× the cost of the 2-D pipeline — it runs one full Abbe sum per
-    optical plane — which is why the app puts it behind an explicit button
-    rather than on the live path.
+    optical plane — so the Simulate tab lists it as its own run.
 
     With a *pipeline*, the latent image is cached and only the develop step
     re-runs when a develop-only knob moves: 0.6 % of the work instead of all
@@ -357,10 +494,7 @@ def compute_profile_3d(
 
 
 #: Rough wall-clock of one FDTD near-field solve, in milliseconds. Measured at
-#: 8.5 s for the default 128-pixel DUV field and more at EUV; the number only
-#: has to be large enough that the scheduler never runs a library live, and
-#: ``LIVE_BUDGET_MS`` is 120 ms, so one solve clears that by two orders of
-#: magnitude however the estimate is divided up.
+#: 8.5 s for the default 128-pixel DUV field and more at EUV.
 _FDTD_SOLVE_MS = 9_000.0
 
 #: Effective speedup from the solver pool, not the worker count. The kernel is
@@ -372,11 +506,12 @@ _FDTD_POOL_SPEEDUP = 3.0
 def estimate_cost_ms(params: ParameterModel) -> float:
     """Rough cost of the next :func:`compute_imaging`, without running it.
 
-    Used to decide whether a change can be applied live or should wait for
-    the drag to settle. Calibrated against measurements on this machine: the
-    Abbe sum is one FFT per source point, so cost goes as (source points) ×
-    (n² log n), and the vector model multiplies it by three — six when
-    unpolarised, which is two incoherent input states.
+    Shown beside the Run buttons, so the price of a source grid or of
+    switching to the vector model is visible before it is paid. Calibrated
+    against measurements on this machine: the Abbe sum is one FFT per source
+    point, so cost goes as (source points) × (n² log n), and the vector model
+    multiplies it by three — six when unpolarised, which is two incoherent
+    input states.
     """
     n = float(params["n_pixels"])
     sg = float(params["source_grid"])
@@ -393,10 +528,9 @@ def estimate_cost_ms(params: ParameterModel) -> float:
         base *= 6.0 if params["polarisation"] == "unpolarised" else 3.0
 
     # A rigorous mask model is not a multiplier on the Abbe sum; it is a
-    # separate, far larger job done once and then cached. Reporting the cached
-    # cost would let the scheduler run a multi-minute FDTD library live on a
-    # slider drag, so an uncached library is quoted at its real scale and the
-    # scheduler defers it. Once the library exists the extra cost is an
+    # separate, far larger job done once and then cached, so an uncached
+    # library is quoted at its real scale — the number a user should see
+    # before pressing Run. Once the library exists the extra cost is an
     # interpolation per source point, which is noise beside the transforms.
     if params["mask_model"] == "fdtd":
         from litho_sim.expose.m3d.provider import library_is_cached

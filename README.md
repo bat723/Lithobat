@@ -436,7 +436,8 @@ area.
 | `patterning/` | `litho_sim.patterning` | `Flow` plus the 11-kind `STEP_REGISTRY`; recipe builders `single_exposure`, `lele`, `sadp`, `saqp`; line-end `cuts`. |
 | `analysis/` | `litho_sim.analysis` | `run_full_analysis`, `sweep_dose_focus`, `compute_process_window`, `compute_nils`, `compute_depth_of_focus`, `compute_exposure_latitude`. |
 | `viz/` | `litho_sim.viz` | Matplotlib figures (`plot_aerial_image`, `plot_bossung_curves`, …) and the 3-D stack renderers in `viz3d` (Plotly optional; Matplotlib fallbacks always available). |
-| `app/` | `python -m litho_sim.app` | The PySide6 desktop front end — Wafer Stack, Mask, Expose and Develop tabs over the same engine. |
+| `app/` | `python -m litho_sim.app` | The PySide6 desktop front end — one tab per processing step (Mask, Source, Resist, Expose, Bake, Develop), the Wafer Stack flow editor, a Simulate tab that runs the print, the 3-D profile, focus-exposure matrices and stochastic trials, and an SEM tab that images the result. |
+| `metrology/` | `litho_sim.metrology` | Instrument models over finished prints: `topdown_sem`, `xsection_sem`, `measure_cd_sem` — a CD-SEM image with material contrast, edge bloom and shot noise, and the CD read back off it. |
 | `ml/` | `litho_sim.ml` | The defect-detection study: convolutional autoencoder, dataset helpers, synthetic defect injection. Requires the `ml` extra. |
 | `tech/` | — | Reserved for technology pipelines (DRAM/NAND); currently empty. |
 
@@ -448,18 +449,24 @@ area.
 
 ### Desktop App (new)
 
-A native Qt front end for driving the engine interactively — sliders for the
-optics, resist, mask and vector-imaging parameters, with the aerial image,
-developed resist and cross-section updating as you move them.
+A native Qt front end for driving the engine interactively. One tab per
+processing step — **Mask, Source, Resist, Expose, Bake, Develop** — each with
+that step's controls beside its picture; then **Wafer Stack** for the process
+flow on the printed resist, **Simulate** to run things, and **SEM** to image
+what was run the way a fab would.
 
 ```bash
 pip install -e ".[app]"       # or: pip install PySide6
 python -m litho_sim.app       # or: litho-sim-app
 ```
 
-The simulation runs on a worker thread, and changes too expensive to render
-live (a large grid, or vector imaging with unpolarised light) wait for the
-drag to settle rather than queueing frames that are stale before they draw.
+Nothing physical recomputes while a control moves: set the steps up, then
+run **Print**, the **3-D resist profile**, a **focus-exposure matrix** or
+**stochastic printing** from the Simulate tab (or the Simulate menu, ⌘R for
+Print). Results land on the step tabs, with a banner the moment a setting
+moves on from what the picture was made with. The mask, the illumination and
+the coated film are drawn live, because they are drawings of the settings
+rather than results. The engine runs on a worker thread throughout.
 
 ### CLI Entry Point
 

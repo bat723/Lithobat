@@ -7,6 +7,7 @@ from typing import Any
 
 from litho_sim.app.params import (
     GROUPS,
+    GROUPS_3D,
     SPECS_BY_KEY,
     ParameterModel,
     ParamSpec,
@@ -278,13 +279,20 @@ class StepReadout(QtWidgets.QWidget):
 
 
 class ControlPanel(QtWidgets.QWidget):
-    """One widget per :class:`ParamSpec`, grouped into collapsible sections."""
+    """One widget per :class:`ParamSpec`, grouped into sections.
+
+    Built over a *subset* of the sections — each step tab owns the panel for
+    the sections that belong to that step — or over all of them when *groups*
+    is left out. Every panel writes into the one shared :class:`ParameterModel`,
+    so the tabs are views of a single configuration rather than copies of it.
+    """
 
     changed = QtCore.Signal(str, object)   # key, value
 
-    def __init__(self, model: ParameterModel, parent=None):
+    def __init__(self, model: ParameterModel, groups=None, parent=None):
         super().__init__(parent)
         self.model = model
+        self.groups = tuple(GROUPS if groups is None else groups)
         self._widgets: dict[str, QtWidgets.QWidget] = {}
         self._wheel_guard = _WheelGuard(self)
         self._labels: dict[str, QtWidgets.QLabel] = {}
@@ -293,33 +301,28 @@ class ControlPanel(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
 
-        for group in GROUPS:
+        for group in self.groups:
             specs = model.in_group(group)
             if not specs:
                 continue
-            box = QtWidgets.QGroupBox(group)
+            # Say which settings only the depth-resolved run reads. They sit
+            # beside the 2-D controls on the same tab — a 3-D setting is a
+            # setting, not a mode — but a user dragging one and pressing
+            # Print would otherwise be left wondering why nothing moved.
+            title = f"{group}  (3-D profile)" if group in GROUPS_3D else group
+            box = QtWidgets.QGroupBox(title)
             form = QtWidgets.QFormLayout(box)
             form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
             for spec in specs:
                 form.addRow(*self._build_row(spec))
-            if group == "Profile":
-                # The expensive branch is entered on request, never on a drag.
-                self.compute_3d = QtWidgets.QPushButton("Compute 3-D")
-                self.compute_3d.setToolTip(
-                    "Run the depth-resolved develop. Roughly 25x the 2-D "
-                    "pipeline, which is why it is not on the live path."
-                )
-                form.addRow(self.compute_3d)
             self._boxes[group] = box
             outer.addWidget(box)
 
         outer.addStretch(1)
 
-    def set_group_visible(self, group: str, visible: bool) -> None:
-        """Show or hide a whole section — used for the 3-D-only controls."""
-        box = self._boxes.get(group)
-        if box is not None:
-            box.setVisible(visible)
+    def keys(self) -> tuple[str, ...]:
+        """The parameters this panel has a widget for."""
+        return tuple(self._widgets)
 
     # -- construction --------------------------------------------------
     def _build_row(self, spec: ParamSpec):
@@ -337,8 +340,10 @@ class ControlPanel(QtWidgets.QWidget):
         if key in self._labels:
             self._labels[key].setText(spec_label(SPECS_BY_KEY[key], stored))
         if key in ("wavelength", "pattern", "mask_type"):
-            # All three decide which thick-mask models can run, and all live
-            # in a different section from the control they gate.
+            # All three decide which thick-mask models can run, and none of
+            # them shares a section with the control they gate. A no-op on a
+            # panel that does not hold the mask-model combo — the window
+            # forwards the change to the panel that does.
             self.refresh_mask_models()
         self.changed.emit(key, stored)
 
@@ -347,7 +352,8 @@ class ControlPanel(QtWidgets.QWidget):
 
         ``multilayer`` needs an EUV mirror and ``fdtd`` needs a pattern with a
         cross-section, and neither condition is visible from the Mask 3-D
-        section itself. Offering the choice and then raising is the wrong
+        section itself — the wavelength is on another tab entirely. Offering
+        the choice and then raising is the wrong
         trade — a user changing one combo box should not have to know that a
         slider three sections up made it impossible. The reason goes in the
         item's tooltip, so it is still discoverable.

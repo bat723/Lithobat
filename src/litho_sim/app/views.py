@@ -8,19 +8,13 @@ from typing import Any
 import numpy as np
 
 from litho_sim.app.compute import (
+    FilmPreview,
     ImagingResult,
+    SourcePreview,
 )
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtWidgets
 
 logger = logging.getLogger(__name__)
-
-
-#: Mesh coarseness used while a control is still moving. Chosen from the
-#: measured curve: paint costs 362 ms at stride 1, 129 at 2, 67 at 4 and 51 at
-#: 8, against a 42 ms floor that is the two 2-D panels and the axes furniture.
-#: Past 4 there is little left to win and the surface starts to lose features.
-#: (While *rotating*, the coarseness is :attr:`Rotatable3D.ROTATE_DETAIL`.)
-DRAFT_STRIDE = 4
 
 
 class _CanvasView(QtWidgets.QWidget):
@@ -78,27 +72,181 @@ class _CanvasView(QtWidgets.QWidget):
         ax.set_xticks([])
         ax.set_yticks([])
 
+    def show_placeholder(self, message: str) -> None:
+        """Say why there is no picture yet, in the space the picture will use.
+
+        Every step view starts here: nothing is computed until the Simulate
+        tab is asked, so an empty axes would read as a broken one.
+        """
+        for ax in self.figure.axes:
+            ax.clear()
+            ax.set_axis_off()
+        self._artists.clear()
+        ax = self.figure.axes[0] if self.figure.axes else self.figure.add_subplot(111)
+        ax.text(0.5, 0.5, message, transform=ax.transAxes,
+                ha="center", va="center", fontsize=10, color="#555555")
+        self._relayout = True
+        self._paint()
+
+    def _restore_axes(self) -> None:
+        """Undo :meth:`show_placeholder` before the first real draw.
+
+        The layout has to be re-solved too: with the axes switched off the
+        solver gave them the whole canvas, and titles and labels drawn into
+        that layout land outside the figure — which is what a picture with
+        no axis labels looked like the first time this was run.
+        """
+        for ax in self.figure.axes:
+            for t in list(ax.texts):
+                t.remove()
+            ax.set_axis_on()
+        self._relayout = True
+
 
 class MaskView(_CanvasView):
-    """What was drawn — the pattern before any optics touch it."""
+    """What was drawn — the pattern before any optics touch it.
+
+    Live: the mask is a drawing of the settings, not a simulation, and it
+    costs microseconds, so it follows the Pattern controls as they move.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ax = self.figure.add_subplot(111)
         self._bare(self.ax, "mask")
 
-    def show_result(self, r: ImagingResult) -> None:
-        self._image("mask", self.ax, r.mask, "gray")
+    def show_mask(self, mask: np.ndarray, pixel_nm: float | None = None) -> None:
+        self._image("mask", self.ax, mask, "gray")
+        px = f" · {pixel_nm:g} nm px" if pixel_nm else ""
         self.ax.set_title(
-            f"mask — transmittance (1 = clear)   {r.mask.shape[1]}×{r.mask.shape[0]} px",
+            f"mask — transmittance (1 = clear)   "
+            f"{mask.shape[1]}×{mask.shape[0]} px{px}",
             fontsize=10,
         )
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self._paint()
+
+    def show_result(self, r: ImagingResult) -> None:
+        self.show_mask(r.mask)
+
+
+class SourceView(_CanvasView):
+    """The illumination as the Abbe sum samples it, and where the drawn
+    pitch's ±1 orders land against it.
+
+    Live, like the mask: it is a picture of the settings. The dashed circles
+    are the pupil displaced by one diffraction order — a source point inside
+    the overlap gives a two-beam image of the pattern; one outside it only
+    adds background. Watching the overlap grow as σ or NA moves, or as the
+    pitch tightens until the circles part, is the Source tab's whole lesson.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_aspect("equal")
+        self._bare(self.ax, "illumination")
+
+    def show_source(self, p: SourcePreview) -> None:
+        ax = self.ax
+        ax.clear()
+        n = p.source.shape[0]
+        # One pixel per source point, on the ±1 σ square the grid spans.
+        ax.imshow(
+            p.source, origin="lower", cmap="magma", extent=(-1, 1, -1, 1),
+            interpolation="nearest",
+            vmin=0.0, vmax=max(float(p.source.max()), 1e-12),
+        )
+        t = np.linspace(0.0, 2.0 * np.pi, 361)
+        ax.plot(np.cos(t), np.sin(t), color="#ffffff", lw=1.0, alpha=0.9,
+                label="pupil (σ = 1)")
+        if p.order_shift is not None:
+            for sign in (-1.0, 1.0):
+                ax.plot(sign * p.order_shift + np.cos(t), np.sin(t),
+                        color="#7fd9c8", lw=1.0, ls="--", alpha=0.9,
+                        label="±1 order of the pitch" if sign > 0 else None)
+            if p.order_shift > 2.0:
+                ax.text(0.5, 0.04, "pitch below the resolution limit — "
+                        "no source point sees a first order",
+                        transform=ax.transAxes, ha="center", va="bottom",
+                        fontsize=8, color="#d97f9b")
+        lim = max(1.15, (p.order_shift or 0.0) + 1.05)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_xlabel("ξ  (pupil units)")
+        ax.set_ylabel("η")
+        ax.set_title(f"illumination — {p.label}   ({n}×{n} grid)", fontsize=10)
+        ax.legend(fontsize=8, loc="upper right")
+        ax.set_facecolor("#000000")
+        self._relayout = True
+        self._paint()
+
+
+class ResistView(_CanvasView):
+    """The coated film, sketched: the stack with its optical planes and voxel
+    rows, and the Dill exposure curve the formulation implies.
+
+    Live and cheap — nothing here is a simulation, it is the coat step's
+    settings drawn so that "11 planes on 50 voxel rows" and "C = 0.04 cm²/mJ"
+    are pictures rather than numbers.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        gs = self.figure.add_gridspec(1, 2, width_ratios=[1.0, 1.4])
+        self.ax_film = self.figure.add_subplot(gs[0])
+        self.ax_dill = self.figure.add_subplot(gs[1])
+
+    def show_film(self, p: FilmPreview) -> None:
+        ax = self.ax_film
+        ax.clear()
+        top = p.thickness_nm
+        # Substrate slab, then the film; widths are arbitrary, heights real.
+        ax.fill_between([0, 1], -0.25 * top, 0.0, color="#8a8a8a", lw=0,
+                        label="substrate")
+        ax.fill_between([0, 1], 0.0, top, color="#4fd97f", alpha=0.85, lw=0,
+                        label=f"resist {top:.0f} nm")
+        # Voxel rows on the left edge, optical planes across the film.
+        for z in np.arange(0.0, top + 1e-9, p.dz_nm):
+            ax.plot([0.0, 0.06], [z, z], color="#1c5a30", lw=0.6)
+        for i, z in enumerate(p.plane_z_nm):
+            ax.plot([0.1, 1.0], [z, z], color="#ffffff", lw=0.9, ls="--",
+                    alpha=0.9, label="optical planes" if i == 0 else None)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(-0.25 * top, top * 1.12)
+        ax.set_xticks([])
+        ax.set_ylabel("z [nm]")
+        ax.set_title(
+            f"{p.n_planes} planes · {p.n_voxels} voxel rows of {p.dz_nm:g} nm",
+            fontsize=9,
+        )
+        ax.legend(fontsize=8, loc="upper right")
+
+        ax = self.ax_dill
+        ax.clear()
+        ax.plot(p.dose_axis, p.pac, color="#c8913a", lw=2.0,
+                label="PAC left,  m = exp(−C·E)")
+        m0 = float(np.exp(-p.dill_C * p.dose_to_clear))
+        ax.axvline(p.dose_to_clear, color="#7f9fd9", ls="--", lw=1.2,
+                   label=f"dose 1.0 = {p.dose_to_clear:.0f} mJ/cm²  (m = {m0:.2f})")
+        ax.set_xlim(0.0, float(p.dose_axis[-1]))
+        ax.set_ylim(0.0, 1.05)
+        ax.set_xlabel("exposure dose E [mJ/cm²]")
+        ax.set_ylabel("PAC remaining")
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=8, loc="upper right")
+        note = (" — the threshold model does not read the chemistry"
+                if p.resist_model == "threshold" else "")
+        ax.set_title(f"Dill exposure, C = {p.dill_C:g} cm²/mJ{note}", fontsize=9)
+        self.figure.suptitle(p.label, fontsize=9, color="#555555")
+        self._relayout = True
         self._paint()
 
 
 class ExposeView(_CanvasView):
-    """The aerial image, and the intensity cut that everything downstream
-    thresholds against. This tab is where ~98 % of the compute goes."""
+    """The aerial image, and the intensity cut through it. Where ~98 % of the
+    compute goes."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -108,27 +256,71 @@ class ExposeView(_CanvasView):
         self._bare(self.ax_img, "aerial image")
 
     def show_result(self, r: ImagingResult) -> None:
+        self._restore_axes()
         self._image("aerial", self.ax_img, r.aerial, "inferno")
         self.ax_img.set_title(
             f"aerial image — contrast {r.contrast:.3f}, NILS {r.nils:.2f}",
             fontsize=10,
         )
+        self.ax_img.set_xticks([])
+        self.ax_img.set_yticks([])
 
         line = self._artists.get("cut")
         if line is None:
             (self._artists["cut"],) = self.ax_cut.plot(
                 r.x_nm, r.cut_aerial, color="#c8913a", lw=2.0, label="aerial")
-            (self._artists["latent"],) = self.ax_cut.plot(
-                r.x_nm, r.cut_latent, color="#7f9fd9", lw=1.4, ls="--",
-                label="after PEB")
             self.ax_cut.set(xlabel="x [nm]", ylabel="intensity")
-            self.ax_cut.legend(fontsize=8, ncol=2, loc="upper right")
+            self.ax_cut.legend(fontsize=8, loc="upper right")
             self.ax_cut.grid(alpha=0.25)
         else:
             line.set_data(r.x_nm, r.cut_aerial)
-            self._artists["latent"].set_data(r.x_nm, r.cut_latent)
-            self.ax_cut.set_xlim(float(r.x_nm[0]), float(r.x_nm[-1]))
+        self.ax_cut.set_xlim(float(r.x_nm[0]), float(r.x_nm[-1]))
         self.ax_cut.set_ylim(0.0, max(float(r.cut_aerial.max()), 1.0) * 1.2)
+        self._paint()
+
+
+class BakeView(_CanvasView):
+    """The latent image after the post-exposure bake — what the developer
+    will actually see — against the aerial image that went in.
+
+    In its own units: intensity for the threshold model, PAC for mack, the
+    protected fraction for car. The result says which, and the axes repeat
+    it, because a curve drawn in the wrong units is the lie this app has
+    told before.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        gs = self.figure.add_gridspec(2, 1, height_ratios=[1.4, 1.0])
+        self.ax_img = self.figure.add_subplot(gs[0])
+        self.ax_cut = self.figure.add_subplot(gs[1])
+        self._bare(self.ax_img, "latent image")
+
+    def show_result(self, r: ImagingResult) -> None:
+        self._restore_axes()
+        self._image("latent", self.ax_img, r.latent, "magma")
+        self.ax_img.set_title(f"latent image — {r.latent_kind}", fontsize=10)
+        self.ax_img.set_xticks([])
+        self.ax_img.set_yticks([])
+
+        line = self._artists.get("latent_cut")
+        if line is None:
+            (self._artists["aerial_cut"],) = self.ax_cut.plot(
+                r.x_nm, r.cut_aerial, color="#c8913a", lw=1.2, ls=":",
+                label="aerial (intensity)")
+            (self._artists["latent_cut"],) = self.ax_cut.plot(
+                r.x_nm, r.cut_latent, color="#7f9fd9", lw=2.0,
+                label="after bake")
+            self.ax_cut.set(xlabel="x [nm]")
+            self.ax_cut.legend(fontsize=8, ncol=2, loc="upper right")
+            self.ax_cut.grid(alpha=0.25)
+        else:
+            self._artists["aerial_cut"].set_data(r.x_nm, r.cut_aerial)
+            line.set_data(r.x_nm, r.cut_latent)
+        self.ax_cut.set_ylabel(r.latent_kind)
+        self.ax_cut.set_xlim(float(r.x_nm[0]), float(r.x_nm[-1]))
+        top = max(float(r.cut_latent.max()), float(r.cut_aerial.max()), 1.0)
+        self.ax_cut.set_ylim(0.0, top * 1.2)
         self._paint()
 
 
@@ -147,9 +339,11 @@ class DevelopView(_CanvasView):
         self._bare(self.ax_img, "resist")
 
     def show_result(self, r: ImagingResult) -> None:
+        self._restore_axes()
         self._image("resist", self.ax_img, r.resist, "RdYlGn")
-        cd = "—" if not np.isfinite(r.cd_nm) or r.cd_nm <= 0 else f"{r.cd_nm:.1f} nm"
-        self.ax_img.set_title(f"developed resist — CD {cd}", fontsize=10)
+        self.ax_img.set_title(f"developed resist — CD {r.cd_text}", fontsize=10)
+        self.ax_img.set_xticks([])
+        self.ax_img.set_yticks([])
 
         line = self._artists.get("cut")
         if line is None:
@@ -357,6 +551,10 @@ class Profile3DView(Rotatable3D, _CanvasView):
         camera = None if self._last is None or not self._drawn_once else (
             self.ax3d.elev, self.ax3d.azim, self.ax3d.roll
         )
+        if not self._drawn_once:
+            # First real picture after the placeholder: the layout was
+            # solved for bare axes and has to be solved again for real ones.
+            self._relayout = True
         self.ax3d.clear()
         if render_mode == "solid":
             # Honest voxel faces — tens of thousands of triangles for
