@@ -13,6 +13,7 @@ from litho_sim.app.params import (
     ParameterModel,
 )
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
+from litho_sim.viz import theme
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ class ProcessWindowTab(QtWidgets.QWidget):
     def _placeholder(self, text: str) -> None:
         self.figure.clf()
         self.figure.text(0.5, 0.5, text, ha="center", va="center",
-                         color="#888888")
+                         color=theme.INK2)
         self.canvas.draw_idle()
 
     def showEvent(self, event):        # noqa: N802 - Qt's spelling
@@ -302,8 +303,8 @@ class ProcessWindowTab(QtWidgets.QWidget):
             for ax in (ax_pw, ax_fourth):
                 ax.set_axis_off()
             ax_pw.text(0.5, 0.5, r.diagnosis, ha="center", va="center",
-                       wrap=True, color="#888888", fontsize=9)
+                       wrap=True, color=theme.INK2, fontsize=9)
 
-        fig.suptitle(r.label, fontsize=9, color="#555555")
+        theme.caption(fig, r.label)
         self.canvas.draw_idle()
 

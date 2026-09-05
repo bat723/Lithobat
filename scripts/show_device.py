@@ -60,8 +60,6 @@ def main() -> int:
                     help="load a saved Stack (.npz) instead of running a flow")
     ap.add_argument("--whole", action="store_true",
                     help="do not section it — show the device as a solid block")
-    ap.add_argument("--downsample", type=int, default=1,
-                    help="mesh stride for the 3-D view (default 1, full detail)")
     a = ap.parse_args()
 
     flow = None
@@ -91,8 +89,7 @@ def main() -> int:
           f"x{stack.mat.shape[2]} voxels; drag inside the view to rotate")
     from litho_sim.app.main import main as app_main
 
-    return app_main(stack, label=label, downsample=max(a.downsample, 1),
-                    flow=flow, section=section)
+    return app_main(stack, label=label, flow=flow, section=section)
 
 
 if __name__ == "__main__":

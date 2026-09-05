@@ -464,23 +464,8 @@ SPECS: tuple[ParamSpec, ...] = (
     ParamSpec("z_exaggeration", "Z exaggeration", "float", 2.0, 1.0, 6.0, 0.5,
               group="3-D view", target="view",
               stage="view",
-              help="Stretch the depth axis for legibility. Redraw only — "
-                   "never recomputes."),
-    ParamSpec("render_mode", "Render as", "choice", "surface",
-              choices=("surface", "solid"),
-              group="3-D view", target="view",
-              stage="view",
-              help="'surface' draws the resist top as a height field — exact "
-                   "here, since development has no lateral component, and "
-                   "~7x faster to draw. 'solid' builds the full voxel mesh, "
-                   "which is what a wafer stack with freestanding features "
-                   "would need."),
-    ParamSpec("downsample", "Render detail", "int", 2, 1, 4, 1,
-              group="3-D view", target="view",
-              stage="view",
-              help="Decimation for the 3-D render. Drawing dominates the "
-                   "cost of the whole 3-D path, so this is the knob that "
-                   "decides whether rotating the view feels smooth."),
+              help="Stretch the picture vertically for legibility. Scales "
+                   "the drawing, never the mesh — live, and never recomputes."),
 )
 
 SPECS_BY_KEY: dict[str, ParamSpec] = {s.key: s for s in SPECS}

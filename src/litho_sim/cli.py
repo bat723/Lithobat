@@ -352,6 +352,9 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     setup_logging(logging.DEBUG if args.verbose else logging.INFO)
+    from litho_sim.viz.plots import apply_style
+
+    apply_style()
 
     dispatch = {
         "demo": _run_demo,

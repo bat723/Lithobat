@@ -435,7 +435,7 @@ area.
 | `wafer/` | `litho_sim.wafer` | `Stack` — the `(nz, ny, nx)` uint8 voxel volume every process step mutates: `deposit_blanket` / `deposit_conformal` (with `on=` for selective growth), `etch` (with `exposure="any"` for lateral attack), `etch_back`, `planarize`, `strip`, `measure_features`. |
 | `patterning/` | `litho_sim.patterning` | `Flow` plus the 11-kind `STEP_REGISTRY`; recipe builders `single_exposure`, `lele`, `sadp`, `saqp`; line-end `cuts`. |
 | `analysis/` | `litho_sim.analysis` | `run_full_analysis`, `sweep_dose_focus`, `compute_process_window`, `compute_nils`, `compute_depth_of_focus`, `compute_exposure_latitude`. |
-| `viz/` | `litho_sim.viz` | Matplotlib figures (`plot_aerial_image`, `plot_bossung_curves`, …) and the 3-D stack renderers in `viz3d` (Plotly optional; Matplotlib fallbacks always available). |
+| `viz/` | `litho_sim.viz` | `theme` — the one visual system every figure follows; Matplotlib figures (`plot_aerial_image`, `plot_bossung_curves`, …) on it; and the voxel mesh extractors and still renderers in `viz3d`. The desktop app's live solid view is `app/solid_view.py` (VTK). |
 | `app/` | `python -m litho_sim.app` | The PySide6 desktop front end — one tab per processing step (Mask, Source, Resist, Expose, Bake, Develop), the Wafer Stack flow editor, a Simulate tab that runs the print, the 3-D profile, focus-exposure matrices and stochastic trials, and an SEM tab that images the result. |
 | `metrology/` | `litho_sim.metrology` | Instrument models over finished prints: `topdown_sem`, `xsection_sem`, `measure_cd_sem` — a CD-SEM image with material contrast, edge bloom and shot noise, and the CD read back off it. |
 | `ml/` | `litho_sim.ml` | The defect-detection study: convolutional autoencoder, dataset helpers, synthetic defect injection. Requires the `ml` extra. |
@@ -456,9 +456,14 @@ flow on the printed resist, **Simulate** to run things, and **SEM** to image
 what was run the way a fab would.
 
 ```bash
-pip install -e ".[app]"       # or: pip install PySide6
+pip install -e ".[app]"       # PySide6, plus pyvista + pyvistaqt for the 3-D views
 python -m litho_sim.app       # or: litho-sim-app
 ```
+
+The two 3-D views (the developed resist and the wafer stack) are a VTK render
+window and need the `viz3d` extra (`pyvista`, `pyvistaqt`, ~120 MB with VTK).
+Without it the app still opens; the 3-D controls are greyed with a tooltip
+that says what to install.
 
 Nothing physical recomputes while a control moves: set the steps up, then
 run **Print**, the **3-D resist profile**, a **focus-exposure matrix** or

@@ -550,7 +550,7 @@ def test_3d_knobs_do_not_disturb_the_2d_image():
 
     for key, value in (("thickness", 200.0), ("n_z_slices", 21),
                        ("develop_model", "mack"), ("standing_waves", True),
-                       ("z_exaggeration", 4.0), ("downsample", 1)):
+                       ("z_exaggeration", 4.0)):
         p.set(key, value)
         compute_imaging(p, pipe)
 
@@ -558,9 +558,8 @@ def test_3d_knobs_do_not_disturb_the_2d_image():
 
 
 def test_view_knobs_are_not_physics():
-    """z-exaggeration and render detail must invalidate nothing at all."""
+    """z-exaggeration must invalidate nothing at all."""
     assert ParameterModel.stages_invalidated_by("z_exaggeration") == ()
-    assert ParameterModel.stages_invalidated_by("downsample") == ()
     assert ParameterModel.stages_invalidated_by("thickness") == ("profile3d",)
     assert "aerial" not in ParameterModel.stages_invalidated_by("thickness")
 
@@ -754,8 +753,9 @@ def test_2d_threshold_is_deliberately_inert_in_3d():
 
 @pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
 def test_the_layout_solver_is_skipped_when_nothing_moved(monkeypatch):
-    """Constrained layout calls get_tightbbox on the 3-D axes — 37 ms a frame
-    to re-derive a layout that only changes when the window does."""
+    """Constrained layout calls get_tightbbox on every artist — colourbars,
+    captions, a legend on the title row — to re-derive a layout that only
+    changes when the window does."""
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from matplotlib.backends.qt_compat import QtWidgets
 
@@ -766,7 +766,7 @@ def test_the_layout_solver_is_skipped_when_nothing_moved(monkeypatch):
     try:
         from matplotlib.layout_engine import ConstrainedLayoutEngine
 
-        view = window.profile_view
+        view = window.profile_view.panels
         view._relayout = True
         view._paint()
         assert isinstance(view.figure.get_layout_engine(), ConstrainedLayoutEngine)
@@ -1064,93 +1064,6 @@ def test_an_imported_wafer_can_be_etched_through(monkeypatch):
         tab.session.append(build_step("strip", {"material": "photoresist"}))
         stack = tab.session.run_to()
         assert stack.thickness_of("photoresist").max() == 0.0
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_rotating_the_stack_coarsens_and_restores(monkeypatch):
-    """The 3-D stack was unusable under the mouse.
-
-    A three-material wafer at 128 px is 268 k triangles, and matplotlib has no
-    depth buffer — it projects and depth-sorts them in Python every frame.
-    Measured at 1349 ms a frame, which does not feel slow, it feels broken.
-    Coarsening the mesh while the camera moves takes it to ~99 ms; the full
-    mesh comes back on release.
-    """
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backend_bases import MouseEvent
-    from matplotlib.backends.qt_compat import QtWidgets
-
-    from litho_sim.app.main import MainWindow
-    from litho_sim.app.stepspecs import build_step
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        window.resize(900, 700)
-        window.show()
-        tab = window.stack_tab
-        tab.session.append(build_step("deposit", {"material": "SiN",
-                                                  "thickness": 20.0,
-                                                  "conformal": False}))
-        tab.session.run_to()
-        tab.on_finished(None)
-        tab.mode_solid.setChecked(True)
-        app.processEvents()
-
-        view = tab.view
-        assert view._detail_floor == 1
-
-        press = MouseEvent("button_press_event", view.canvas, 400, 300, button=1)
-        press.inaxes = view.ax
-        view._rot_press(press)
-        app.processEvents()
-        assert view._detail_floor == view.ROTATE_DETAIL, "mesh did not coarsen"
-
-        view._rot_release(
-            MouseEvent("button_release_event", view.canvas, 420, 320, button=1)
-        )
-        app.processEvents()
-        assert view._detail_floor == 1, "the drag ended on the coarse mesh"
-        assert view._bg is None, "blit background was not released"
-    finally:
-        window.close()
-
-
-@pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt binding")
-def test_rotating_never_drops_a_material(monkeypatch):
-    """Coarsening may lose detail; it must not lose a layer.
-
-    At stride 16 a three-material stack renders 31 fps and silently omits the
-    20 nm nitride — which is why ROTATE_DETAIL is 8 and not more.
-    """
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from matplotlib.backends.qt_compat import QtWidgets
-
-    from litho_sim.app.main import MainWindow
-    from litho_sim.app.stepspecs import build_step
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = MainWindow()
-    try:
-        tab = window.stack_tab
-        for mat, nm in (("SiN", 20.0), ("poly-Si", 60.0)):
-            tab.session.append(build_step("deposit", {"material": mat,
-                                                      "thickness": nm,
-                                                      "conformal": False}))
-        tab.session.run_to()
-        tab.on_finished(None)
-        tab.mode_solid.setChecked(True)
-        app.processEvents()
-
-        full = len(tab.view.ax.collections)
-        tab.view._rerender_3d(tab.view.ROTATE_DETAIL)
-        app.processEvents()
-        assert len(tab.view.ax.collections) == full, (
-            "the rotation mesh dropped a material — a preview that omits a "
-            "layer is worse than a slow one"
-        )
     finally:
         window.close()
 
@@ -1454,7 +1367,7 @@ def test_loading_a_device_fills_the_recipe_list(monkeypatch):
         tab = window.stack_tab
         assert tab.recipe.count() == 0, "premise: it starts empty"
 
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         app.processEvents()
 
         assert tab.recipe.count() == len(flow) > 30, (
@@ -1496,7 +1409,7 @@ def test_selecting_a_device_step_shows_the_settings_it_ran_with(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         fin_etch = next(i for i, s in enumerate(flow.steps)
                         if s.kind == "etch" and not isinstance(s.targets, str))
         tab.recipe.setCurrentRow(fin_etch)
@@ -1534,7 +1447,7 @@ def test_the_scrubber_walks_the_device_build(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         app.processEvents()
 
         assert tab.scrubber.maximum() == len(flow), (
@@ -1573,7 +1486,7 @@ def test_an_as_built_step_can_be_edited_removed_and_built_on(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         tab.recipe.setCurrentRow(3)
         app.processEvents()
 
@@ -1628,7 +1541,7 @@ def test_the_cross_section_of_a_scrubbed_step_is_not_empty(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow,
+        tab.load_stack(stack, label=label, flow=flow,
                        section=lambda s: sectioned("gaa", s))
         tab.mode_section.setChecked(True)
         app.processEvents()
@@ -1745,7 +1658,7 @@ def test_the_flow_strip_toggle_is_greyed_where_it_does_nothing(monkeypatch):
         tab.mode_solid.setChecked(True)
         app.processEvents()
         assert not tab.show_flow.isEnabled()
-        assert tab.view.ax_panel is None
+        assert tab.view._pages.currentWidget() is tab.view.solid, "the solid is showing"
 
         tab.mode_section.setChecked(True)
         app.processEvents()
@@ -1785,7 +1698,7 @@ def test_clicking_through_a_device_recipe_never_changes_it(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         app.processEvents()
         before = [s.to_dict() for s in tab.session.steps]
 
@@ -1817,7 +1730,7 @@ def test_editing_a_device_step_marks_the_tail_stale_without_running(monkeypatch)
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         app.processEvents()
         assert tab.session.locked_upto == 0, "the context came with it"
 
@@ -1861,7 +1774,7 @@ def test_an_etch_profile_control_reaches_the_step(monkeypatch):
     window = MainWindow()
     try:
         tab = window.stack_tab
-        tab.load_stack(stack, label=label, downsample=1, flow=flow)
+        tab.load_stack(stack, label=label, flow=flow)
         etch = next(i for i, s in enumerate(tab.session.steps)
                     if s.kind == "etch" and not isinstance(s.targets, str))
         tab.recipe.setCurrentRow(etch)

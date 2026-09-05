@@ -19,6 +19,10 @@ pytest-cov>=4.1
 # UI and 3-D visualisation
 streamlit>=1.33
 plotly>=6.0
+# The desktop app (python -m litho_sim.app) and its VTK solid view
+PySide6>=6.5
+pyvista>=0.48
+pyvistaqt>=0.13
 
 # Optional: marching-cubes meshes in viz3d (freestanding spacers, undercut).
 # viz3d falls back to height-field surfaces without it.

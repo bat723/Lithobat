@@ -9,6 +9,7 @@ from litho_sim.app.params import (
     ParameterModel,
 )
 from litho_sim.app.qt import QtCore, QtGui, QtWidgets
+from litho_sim.app.solid_view import INSTALL_HINT, SolidView
 from litho_sim.app.views import StackView
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,6 @@ class StackTab(QtWidgets.QWidget):
         #: Mesh stride for the 3-D view. 4 is right for a flow being built —
         #: the wafer is redrawn on every edit — and wrong for a finished device
         #: loaded to be looked at, which `load_stack` drops to 1.
-        self._display_downsample = 4
         self._loaded_label = "as loaded"
         #: Has a wafer been handed to this tab — a device, a saved ``.npz``, a
         #: developed profile? If so its grid is the authority, and adding the
@@ -182,6 +182,11 @@ class StackTab(QtWidgets.QWidget):
         self.mode_section = QtWidgets.QRadioButton("cross-section")
         self.mode_solid = QtWidgets.QRadioButton("3-D")
         self.mode_section.setChecked(True)
+        if not SolidView.available:
+            # Greyed, not hidden: the control exists, and the tooltip says
+            # what it would take to make it act.
+            self.mode_solid.setEnabled(False)
+            self.mode_solid.setToolTip(INSTALL_HINT)
         modes.addWidget(self.mode_section)
         modes.addWidget(self.mode_solid)
         modes.addStretch(1)
@@ -522,8 +527,7 @@ class StackTab(QtWidgets.QWidget):
             self._touch()
 
     def load_stack(self, stack, label: str = "printed device",
-                   downsample: int = 1, solid: bool = True, flow=None,
-                   section=None) -> None:
+                   solid: bool = True, flow=None, section=None) -> None:
         """Adopt an already-built wafer as this flow's starting state.
 
         The sibling of :meth:`import_profile`, one level further along: that
@@ -544,12 +548,6 @@ class StackTab(QtWidgets.QWidget):
             The wafer to adopt.
         label : str
             Shown against the scrubber's "as loaded" position.
-        downsample : int
-            Mesh decimation for the 3-D view. Defaults to 1 — full detail —
-            because the point of loading a device is to look at features the
-            flow builder's default stride of 4 would erase: an 8 nm nanosheet
-            at 2 nm voxels survives stride 4 as two voxels, and a 4 nm gate
-            oxide does not survive at all.
         solid : bool
             Open in the 3-D view rather than the cross-section.
         flow : DeviceFlow, optional
@@ -582,16 +580,15 @@ class StackTab(QtWidgets.QWidget):
         # Set before `_refresh_list`, which selects a row and so reaches
         # `_on_selected` → `_add`'s grid guard.
         self._inherited = True
-        self._display_downsample = max(int(downsample), 1)
         # What the scrubber's first position *is*. Without a flow that slot
         # holds the finished device, so it takes the device's name; with one it
         # holds the bare wafer the flow started from, and calling that "GAA
         # nanosheet" would label a blank substrate as the transistor.
         self._loaded_label = "bare wafer" if flow is not None else label
         self._refresh_list()
-        if solid:
+        if solid and self.mode_solid.isEnabled():
             # The toggle is wired to `mode_section`, so setting the 3-D radio
-            # is what actually swaps the axes.
+            # is what actually swaps the page.
             self.mode_solid.setChecked(True)
         # Land on the finished wafer, not the bare substrate: loading a device
         # is a request to look at the device. With a flow that is the last
@@ -600,6 +597,9 @@ class StackTab(QtWidgets.QWidget):
         if flow is not None and len(self.session):
             self.recipe.setCurrentRow(len(self.session) - 1)
         self._on_scrub(self.scrubber.value())
+        # A different wafer deserves a fresh framing; scrubbing and re-running
+        # keep the camera, loading does not.
+        self.view.reframe()
         # Only if something is actually missing. An adopted flow arrives with
         # every snapshot already taken, and scheduling a run for it marked the
         # tab busy for a round trip that had nothing to compute — which, while
@@ -712,7 +712,6 @@ class StackTab(QtWidgets.QWidget):
         if self._section is not None and not self.mode_section.isChecked():
             stack = self._section(stack)
         self.scrub_label.setText(label)
-        self.view.show_stack(stack, label=label,
-                             downsample=self._display_downsample)
+        self.view.show_stack(stack, label=label)
 
 

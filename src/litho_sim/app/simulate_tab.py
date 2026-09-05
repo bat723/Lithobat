@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import logging
 
+import numpy as np
+
 from litho_sim.app.compute import (
     ImagingResult,
     Profile3DResult,
@@ -14,6 +16,8 @@ from litho_sim.app.params import ParameterModel
 from litho_sim.app.process_window_tab import ProcessWindowTab
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
 from litho_sim.app.stochastics_tab import StochasticsTab
+from litho_sim.viz import theme
+from litho_sim.viz.theme import CMAP, SERIES
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +103,7 @@ class _RunPage(QtWidgets.QWidget):
     def _placeholder(self, text: str) -> None:
         self.figure.clf()
         self.figure.text(0.5, 0.5, text, ha="center", va="center",
-                         color="#888888", wrap=True)
+                         color=theme.INK2, wrap=True)
         self.canvas.draw_idle()
 
     @property
@@ -156,31 +160,42 @@ class PrintPage(_RunPage):
         fig = self.figure
         fig.clf()
         gs = fig.add_gridspec(2, 3, height_ratios=[1.6, 1.0])
-        for col, (data, cmap, title) in enumerate((
-            (r.mask, "gray", "mask"),
-            (r.aerial, "inferno", f"aerial — NILS {r.nils:.2f}"),
-            (r.resist, "RdYlGn", f"resist — CD {r.cd_text}"),
-        )):
+        px = float(r.x_nm[1] - r.x_nm[0]) if len(r.x_nm) > 1 else 1.0
+        h, w = r.aerial.shape[:2]
+        extent = (0.0, w * px, 0.0, h * px)
+        resist = theme.material_colour("photoresist")
+        resist_cmap, resist_norm = theme.binary_cmap(resist)
+        panels = (
+            (r.mask, CMAP.micrograph, "Mask", None,
+             {"vmin": 0.0, "vmax": 1.0}),
+            (r.aerial, CMAP.intensity, "Aerial image", f"NILS {r.nils:.2f}",
+             {"vmin": 0.0, "cbar_label": "intensity [a.u.]"}),
+            (r.resist, resist_cmap, "Developed resist", f"CD {r.cd_text}",
+             {"norm": resist_norm}),
+        )
+        for col, (data, cmap, title, cap, kw) in enumerate(panels):
             ax = fig.add_subplot(gs[0, col])
-            ax.imshow(data, origin="lower", cmap=cmap)
-            ax.set_title(title, fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
+            theme.physical_image(ax, data, extent, cmap, **kw)
+            theme.title(ax, title, caption_text=cap)
         # The cut through all three, which is where the CD actually comes
         # from: the latent crossing the threshold is the printed edge.
         ax = fig.add_subplot(gs[1, :])
-        ax.plot(r.x_nm, r.cut_aerial, color="#c8913a", lw=1.2, ls=":",
+        top = max(float(r.cut_latent.max()), float(r.cut_aerial.max()), 1.0) * 1.2
+        ax.fill_between(r.x_nm, 0.0, np.asarray(r.cut_resist, dtype=float) * top,
+                        color=resist, alpha=0.18, lw=0, label="resist remains")
+        ax.plot(r.x_nm, r.cut_aerial, color=SERIES.aerial, lw=1.2, alpha=0.6,
                 label="aerial")
-        ax.plot(r.x_nm, r.cut_latent, color="#7f9fd9", lw=1.8,
+        ax.plot(r.x_nm, r.cut_latent, color=SERIES.latent,
                 label=f"latent ({r.latent_kind})")
-        ax.plot(r.x_nm, r.cut_resist, color="#4fd97f", lw=1.6, label="resist")
-        ax.axhline(r.threshold, color="#d97f9b", ls="--", lw=1.0,
+        theme.rule(ax, y=r.threshold, color=SERIES.threshold, ls="--", lw=1.0,
                    label="threshold")
         ax.set_xlim(float(r.x_nm[0]), float(r.x_nm[-1]))
+        ax.set_ylim(0.0, top)
         ax.set_xlabel("x [nm]")
-        ax.grid(alpha=0.25)
-        ax.legend(fontsize=8, ncol=4, loc="upper right")
-        fig.suptitle(r.summary, fontsize=9, color="#555555")
+        theme.grid(ax)
+        theme.title(ax, "Cut through the centre row")
+        theme.legend(ax, where="top")
+        theme.caption(fig, r.summary)
         self.canvas.draw_idle()
         self._summary = r.summary
         self.notes.setText(r.summary)
@@ -209,24 +224,28 @@ class ProfilePage(_RunPage):
         )
 
     def show_profile(self, r: Profile3DResult, grid) -> None:
-        from litho_sim.viz.viz3d import profile_figure
-
         fig = self.figure
         fig.clf()
         ax_prof, ax_lat = fig.subplots(2, 1)
-        profile_figure(r.remaining, grid, row=r.row, ax=ax_prof)
-        ax_prof.set_title("profile through the film", fontsize=9)
+        width = r.cut_remaining.shape[1] * grid.pixel_size * 1e9
+        extent = (0.0, width, 0.0, float(r.height_nm))
+        cmap, norm = theme.binary_cmap(theme.material_colour("photoresist"))
+        theme.physical_image(
+            ax_prof, np.asarray(r.cut_remaining, dtype=np.uint8), extent, cmap,
+            norm=norm, aspect="auto", ylabel="z [nm]",
+        )
+        theme.title(ax_prof, "Profile through the film",
+                    caption_text=r.summary.replace("    ", " · "))
         if r.diagnosis:
             ax_prof.text(0.5, 0.5, r.diagnosis, transform=ax_prof.transAxes,
-                         ha="center", va="center", fontsize=8,
-                         color="#B00020", wrap=True)
-        ax_lat.imshow(
-            r.cut_latent, origin="lower", aspect="auto", cmap="magma",
-            extent=[0, float(r.x_nm[-1]), 0, r.height_nm],
+                         ha="center", va="center", fontsize=8.5,
+                         color=SERIES.warn, wrap=True)
+        theme.physical_image(
+            ax_lat, r.cut_latent, extent, CMAP.latent, aspect="auto",
+            ylabel="z [nm]", cbar_label="PAC after bake",
         )
-        ax_lat.set(xlabel="x [nm]", ylabel="z [nm]")
-        ax_lat.set_title("latent image (PAC after bake)", fontsize=9)
-        fig.suptitle(f"{r.label}    {r.summary}", fontsize=9, color="#555555")
+        theme.title(ax_lat, "Latent image after bake")
+        theme.caption(fig, r.label)
         self.canvas.draw_idle()
         self._summary = r.summary
         self.notes.setText(r.summary)

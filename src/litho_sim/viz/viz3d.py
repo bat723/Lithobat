@@ -32,6 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from litho_sim.core.config import GridConfig
+from litho_sim.viz import theme as _theme
 from litho_sim.wafer import VACUUM, Material, Stack, get_material
 
 logger = logging.getLogger(__name__)
@@ -550,29 +551,32 @@ def cross_section_figure(
     matplotlib.axes.Axes
     """
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
+
+    from litho_sim.viz import theme
 
     sec = stack.cross_section(axis, index)
     mats = stack.present_materials()
-    lut, cmap, norm, _ = material_colormap([m.id for m in mats])
+    lut, cmap, norm, _ = material_colormap([m.id for m in mats],
+                                           vacuum=theme.SURFACE)
     img = lut[sec]
 
     if ax is None:
-        _, ax = plt.subplots(figsize=(9, 3.2))
+        theme.apply()
+        _, ax = plt.subplots(figsize=(9, 3.2), constrained_layout=True)
 
     width_nm = sec.shape[1] * stack.pixel_size * 1e9
     height_nm = sec.shape[0] * stack.dz * 1e9
-    ax.imshow(
-        img, origin="lower", cmap=cmap, norm=norm, aspect="auto",
-        extent=(0, width_nm, 0, height_nm), interpolation="nearest",
+    theme.physical_image(
+        ax, img, (0, width_nm, 0, height_nm), cmap, norm=norm, aspect="auto",
+        xlabel="x [nm]" if axis == "y" else "y [nm]", ylabel="z [nm]",
     )
-    ax.set_xlabel("x [nm]" if axis == "y" else "y [nm]")
-    ax.set_ylabel("z [nm]")
-    ax.set_title(title or f"Cross-section ({axis}-cut)")
-    ax.legend(
-        handles=[Patch(facecolor=m.color, label=m.name) for m in mats],
-        loc="upper right", fontsize=8, framealpha=0.85,
-    )
+    if title is None:
+        title = f"Cross-section, {axis}-cut"
+    if title:
+        theme.title(ax, title)
+    # The materials, as swatches beside the picture — never on it.
+    ax.legend(handles=theme.material_swatches(mats), loc="upper left",
+              bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
     return ax
 
 
@@ -581,15 +585,7 @@ def cross_section_figure(
 #: fill, anisotropic vs lateral etch) are carried in the row text, not by a
 #: colour, because past about eight classes adjacent hues stop being telling
 #: apart and the panel becomes decoration.
-PROCESS_FAMILIES: dict[str, str] = {
-    "substrate": "#6b7280",
-    "litho":     "#4fd97f",
-    "deposit":   "#5b8def",
-    "ald":       "#2bb3a3",
-    "etch":      "#e05252",
-    "cmp":       "#a06fd0",
-    "strip":     "#b08968",
-}
+PROCESS_FAMILIES: dict[str, str] = dict(_theme.FAMILY)
 
 #: (matcher, family, how to say it). Order matters — the first match wins, so
 #: the specific forms sit above the general ones.
@@ -716,10 +712,10 @@ def process_flow_panel(
         # One string with a newline centres the pair and lets long details
         # push the name off its own row.
         ax.text(0.10, i + 0.34, f"{verb}{times}", fontsize=fs, va="center",
-                ha="left", color="#1c1f24", weight="bold")
+                ha="left", color=_theme.INK, weight="bold")
         ax.text(0.10, i + 0.72, detail, fontsize=fs * 0.88, va="center",
-                ha="left", color="#5b6169")
-    ax.set_title(f"process flow — {len(steps)} steps", fontsize=8.5)
+                ha="left", color=_theme.INK2)
+    _theme.title(ax, "Process flow", caption_text=f"{len(steps)} steps")
     return ax, n
 
 
@@ -872,11 +868,14 @@ def crop(
 _NICE_NM = (5, 10, 20, 25, 50, 100, 200, 250, 500, 1000)
 
 
-def _nice_length(span_nm: float, target: float = 0.38) -> float:
+def nice_length(span_nm: float, target: float = 0.38) -> float:
     """Largest round length that is at most *target* of the span."""
     want = span_nm * target
     fits = [v for v in _NICE_NM if v <= want]
     return float(fits[-1]) if fits else float(_NICE_NM[0])
+
+
+_nice_length = nice_length
 
 
 def _draw_frame(ax, x1: float, y1: float, z1: float, style: str,
@@ -1071,7 +1070,7 @@ def device_figure_mpl(
         _draw_frame(ax, extent_x, extent_y, height, chrome)
 
     if scale_bar:
-        length = scale_bar_nm or _nice_length(extent_x)
+        length = scale_bar_nm or nice_length(extent_x)
         _draw_scale_bar(ax, length, extent_x, extent_y)
 
     logger.info("device_figure_mpl: %d materials, %d triangles, chrome=%s",

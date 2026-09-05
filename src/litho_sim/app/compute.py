@@ -315,7 +315,7 @@ def source_preview(params: ParameterModel) -> SourcePreview:
     label = (
         f"{optics.source_type} · σ {optics.sigma_outer:.2f}"
         + (f"/{optics.sigma_inner:.2f}" if optics.sigma_inner > 0 else "")
-        + f" · {n_points} source points · k₁ {k1:.2f}"
+        + f" · {n_points} source points · $k_1$ {k1:.2f}"
     )
     return SourcePreview(
         source=source, n_points=n_points, order_shift=shift, k1=float(k1),

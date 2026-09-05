@@ -22,9 +22,13 @@ dependencies = [
 
 [project.optional-dependencies]
 viz = [
-    "plotly>=6.0",        # interactive 3-D stack viewer
-    "streamlit>=1.33",    # interactive app
+    "plotly>=6.0",        # static 3-D stack figure for the Streamlit pages
+    "streamlit>=1.33",    # the older browser app
     "scikit-image>=0.21", # optional: marching-cubes meshes for freestanding spacers
+]
+viz3d = [
+    "pyvista>=0.48",      # the desktop app's solid view: VTK with a depth buffer
+    "pyvistaqt>=0.13",    # its Qt render widget
 ]
 ml = [
     "torch>=2.0",
@@ -35,6 +39,8 @@ ml = [
 ]
 app = [
     "PySide6>=6.5",       # native desktop front end (python -m litho_sim.app)
+    "pyvista>=0.48",      # its 3-D views — the same two lines as `viz3d`
+    "pyvistaqt>=0.13",
 ]
 dev = [
     "pytest>=7.4",

@@ -8,6 +8,8 @@ import logging
 from litho_sim.app.params import ParameterModel
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
 from litho_sim.app.stochastics import StochRequest, StochResult
+from litho_sim.viz import theme
+from litho_sim.viz.theme import CMAP, MUTED, SERIES
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,7 @@ class StochasticsTab(QtWidgets.QWidget):
     def _placeholder(self, text: str) -> None:
         self.figure.clf()
         self.figure.text(0.5, 0.5, text, ha="center", va="center",
-                         color="#888888")
+                         color=theme.INK2)
         self.canvas.draw_idle()
 
     def _set_editing_enabled(self, on: bool) -> None:
@@ -168,40 +170,33 @@ class StochasticsTab(QtWidgets.QWidget):
         ax_hist = fig.add_subplot(gs[1, 1])
 
         extent = (0.0, float(r.x_nm[-1]), 0.0, float(r.x_nm[-1]))
-        ax_ref.imshow(r.reference, origin="lower", cmap="gray",
-                      extent=extent, vmin=0.0, vmax=1.0)
-        ax_ref.set_title("deterministic (design intent)", fontsize=9)
-        ax_one.imshow(r.example, origin="lower", cmap="gray",
-                      extent=extent, vmin=0.0, vmax=1.0)
-        ax_one.set_title("one trial", fontsize=9)
-
-        im = ax_prob.imshow(r.prob_map, origin="lower", cmap="magma",
-                            extent=extent, vmin=0.0, vmax=1.0)
-        ax_prob.set_title("print probability", fontsize=9)
-        fig.colorbar(im, ax=ax_prob, fraction=0.046)
-        for ax in (ax_ref, ax_one, ax_prob):
-            ax.set_xlabel("x [nm]", fontsize=8)
-            ax.set_ylabel("y [nm]", fontsize=8)
+        cmap, norm = theme.binary_cmap(theme.material_colour("photoresist"))
+        theme.physical_image(ax_ref, r.reference, extent, cmap, norm=norm)
+        theme.title(ax_ref, "Deterministic print", caption_text="design intent")
+        theme.physical_image(ax_one, r.example, extent, cmap, norm=norm)
+        theme.title(ax_one, "One trial")
+        theme.physical_image(ax_prob, r.prob_map, extent, CMAP.probability,
+                             vmin=0.0, vmax=1.0, cbar_label="print probability")
+        n_trials = int(np.size(r.lcdu.cds))
+        theme.title(ax_prob, "Print probability",
+                    caption_text=f"over {n_trials} trials")
 
         cds_nm = r.lcdu.cds[r.lcdu.cds > 0] * 1e9
         if cds_nm.size:
             ax_hist.hist(cds_nm, bins=min(12, max(4, cds_nm.size // 2)),
-                         color="#7f9fd9", edgecolor="#44507a")
+                         color=SERIES.aerial, edgecolor=theme.SURFACE, linewidth=1.5)
             if np.isfinite(r.lcdu.cd_mean):
-                ax_hist.axvline(r.lcdu.cd_mean * 1e9, color="#c8913a",
-                                lw=1.4, ls="--", label="mean")
-                ax_hist.legend(fontsize=8)
-            ax_hist.set_xlabel("CD [nm]", fontsize=8)
-            ax_hist.set_ylabel("trials", fontsize=8)
-            ax_hist.set_title(
-                f"CD across trials — LCDU(3σ) "
-                f"{'—' if not np.isfinite(r.lcdu.lcdu) else f'{r.lcdu.lcdu*1e9:.2f} nm'}",
-                fontsize=9,
-            )
+                theme.rule(ax_hist, x=r.lcdu.cd_mean * 1e9, color=MUTED, lw=1.0,
+                           text=f"mean {r.lcdu.cd_mean * 1e9:.1f} nm")
+            ax_hist.set_xlabel("CD [nm]")
+            ax_hist.set_ylabel("trials")
+            theme.grid(ax_hist)
+            lcdu = ("—" if not np.isfinite(r.lcdu.lcdu)
+                    else f"{r.lcdu.lcdu * 1e9:.2f} nm")
+            theme.title(ax_hist, "CD across trials", caption_text=f"LCDU (3σ) {lcdu}")
         else:
             ax_hist.set_axis_off()
-            ax_hist.text(0.5, 0.5, "no trial printed a measurable CD",
-                         ha="center", va="center", color="#888888", fontsize=9)
+            theme.placeholder(ax_hist, "no trial printed a measurable CD")
 
-        fig.suptitle(r.label, fontsize=9, color="#555555")
+        theme.caption(fig, r.label)
         self.canvas.draw_idle()

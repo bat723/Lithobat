@@ -224,7 +224,7 @@ def test_moving_a_control_computes_nothing(monkeypatch):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     win = MainWindow()
     try:
-        before = win.mask_view.ax.get_title()
+        before = win.mask_view.readout
         win.step_tabs["Mask"].panel._emit("n_pixels", 64)
         win.step_tabs["Mask"].panel._emit("pitch", 240.0)
         win.step_tabs["Source"].panel._emit("NA", 1.10)
@@ -235,9 +235,10 @@ def test_moving_a_control_computes_nothing(monkeypatch):
         assert runs == [], f"moving a control asked the worker to {runs}"
         assert win.model["n_pixels"] == 64 and win.model["NA"] == pytest.approx(1.10)
         # The drawings of the settings did follow.
-        assert "64×64" in win.mask_view.ax.get_title()
-        assert win.mask_view.ax.get_title() != before
-        assert "source points" in win.source_view.ax.get_title()
+        # The numbers live in the caption row; the title only names the picture.
+        assert "64×64" in win.mask_view.readout
+        assert win.mask_view.readout != before
+        assert "source points" in win.source_view.readout
         assert "150 nm" in win.resist_view.figure._suptitle.get_text()
         # And the result views still say nothing has been printed.
         assert not win.step_tabs["Expose"].stale
@@ -463,8 +464,12 @@ def test_scrolling_a_step_tab_does_not_touch_any_parameter(monkeypatch):
         for tab in win.step_tabs.values():
             tab.changed.connect(lambda k, v: emitted.append(k))
 
-        # Short window, so the panels genuinely overflow and can scroll.
+        # Short panels, so they genuinely overflow and can scroll. The window
+        # itself cannot go below its minimum, and since the Develop tab lost
+        # its two render knobs no panel overflows at a size it will take.
         win.resize(1400, 400)
+        for tab in win.step_tabs.values():
+            tab.scroll.setMaximumHeight(240)
         win.show()
         app.processEvents()
 
@@ -569,13 +574,13 @@ def test_the_sem_tab_images_the_wafer_stack_at_the_step_on_screen(monkeypatch):
         assert tab.last is None, "nothing to image before anything ran"
         assert not tab.cut_row.isEnabled(), "a print has no cut to choose"
 
-        win.stack_tab.load_stack(wafer, label="test wafer", downsample=1)
+        win.stack_tab.load_stack(wafer, label="test wafer")
         assert tab.last is None, "the print source does not redraw for a wafer"
         tab.source.setCurrentIndex(2)
         assert tab.cut_row.isEnabled()
         assert tab.last is not None and tab.last.mode == "topdown"
-        assert "wafer stack" in tab.figure.axes[0].get_title()
-        assert "test wafer" in tab.figure.axes[0].get_title()
+        assert "wafer stack" in tab.figure.axes[0].get_title(loc="left")
+        assert "test wafer" in tab.figure.axes[0].get_title(loc="left")
 
         tab.mode_xs.setChecked(True)
         assert tab.last.mode == "xsection"
@@ -591,7 +596,7 @@ def test_the_sem_tab_images_the_wafer_stack_at_the_step_on_screen(monkeypatch):
         tab.cut_pos.setValue(10)
         assert tab.cut_label.text() == "10 %"
         assert tab.cut == ("x", round(0.1 * 47))
-        assert "x = " in tab.figure.axes[0].get_title()
+        assert "x = " in tab.figure.axes[0]._litho_caption.get_text()
 
         # Never stale: dating the prints leaves the stack's banner down.
         tab.set_stale(True, True)
@@ -606,8 +611,8 @@ def test_the_sem_tab_images_the_wafer_stack_at_the_step_on_screen(monkeypatch):
         taller = Stack.blank(grid, dz=4e-9, substrate_thickness=40e-9, headroom=200e-9)
         taller.deposit_blanket("SiO2", 40e-9)
         taller.deposit_blanket("TiN", 20e-9)
-        win.stack_tab.load_stack(taller, label="with metal", downsample=1)
-        assert "with metal" in tab.figure.axes[0].get_title()
+        win.stack_tab.load_stack(taller, label="with metal")
+        assert "with metal" in tab.figure.axes[0].get_title(loc="left")
         assert tab.last.image.shape != before.shape or not np.array_equal(tab.last.image, before)
     finally:
         win.thread.quit()

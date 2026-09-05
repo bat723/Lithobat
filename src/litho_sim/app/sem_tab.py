@@ -22,6 +22,8 @@ from litho_sim.metrology import (
     topdown_sem,
     xsection_sem,
 )
+from litho_sim.viz import theme
+from litho_sim.viz.theme import CMAP, MUTED, SERIES
 
 logger = logging.getLogger(__name__)
 
@@ -303,8 +305,7 @@ class SemTab(QtWidgets.QWidget):
 
     def _placeholder(self, text: str) -> None:
         self.figure.clf()
-        self.figure.text(0.5, 0.5, text, ha="center", va="center",
-                         color="#888888", wrap=True)
+        theme.placeholder(self.figure, text)
         self.canvas.draw_idle()
         self.readout.setText("")
         self.last = None
@@ -438,8 +439,8 @@ class SemTab(QtWidgets.QWidget):
             sem = stack_xsection_sem(stack, axis, index, cfg, overrides=overrides)
             meas = None
             self._draw_xsection(
-                sem, f"{src}, {plane} at {axis} = {pos_nm:.0f} nm",
-                across=across, floor="substrate bottom",
+                sem, src, across=across, floor="substrate bottom",
+                cut=f"{plane} at {axis} = {pos_nm:.0f} nm",
             )
             self.notes.setText(
                 "The cleaved face of the wafer stack. Each material sits at "
@@ -461,29 +462,27 @@ class SemTab(QtWidgets.QWidget):
 
         x0, x1, y0, y1 = sem.extent_nm
         vmax = float(np.percentile(sem.image, 99.5))
-        ax.imshow(sem.image, origin="lower", cmap="gray", extent=(x0, x1, y0, y1),
-                  vmin=0.0, vmax=max(vmax, 1e-6), interpolation="nearest")
-        ax.set_xlabel("x [nm]")
-        ax.set_ylabel("y [nm]")
-        ax.set_title(
-            f"top-down SEM of the {src} — {sem.electrons:.0f} e⁻/px, "
-            f"SNR {sem.snr:.1f}",
-            fontsize=10,
-        )
+        # A micrograph: grey, in nanometres, and nothing drawn over it.
+        theme.physical_image(ax, sem.image, (x0, x1, y0, y1), CMAP.micrograph,
+                             vmin=0.0, vmax=max(vmax, 1e-6))
+        theme.title(ax, f"Top-down SEM of the {src}",
+                    caption_text=f"{sem.electrons:.0f} e⁻/px · SNR {sem.snr:.1f}")
 
         xs = meas.x * 1e9
-        ax_p.plot(xs, meas.profile, color="#c8913a", lw=1.4, label="row-averaged signal")
+        if meas.found:
+            ax_p.axvspan(meas.left * 1e9, meas.right * 1e9, color=SERIES.aerial,
+                         alpha=0.10, lw=0, label=f"measured {meas.feature}")
+        ax_p.plot(xs, meas.profile, color=SERIES.signal, label="row-averaged signal")
         if meas.edges.size:
             ax_p.plot(meas.edges * 1e9, np.interp(meas.edges, meas.x, meas.profile),
-                      "v", color="#7f9fd9", ms=6, label="edge peaks")
-        if meas.found:
-            ax_p.axvspan(meas.left * 1e9, meas.right * 1e9, color="#4fd97f",
-                         alpha=0.25, label=f"measured {meas.feature}")
+                      "o", color=MUTED, ms=7, mec=theme.SURFACE, mew=1.5,
+                      ls="none", label="edge peaks")
         ax_p.set_xlim(x0, x1)
         ax_p.set_xlabel("x [nm]")
         ax_p.set_ylabel("SE / primary")
-        ax_p.grid(alpha=0.25)
-        ax_p.legend(fontsize=8, loc="upper right", ncol=3)
+        theme.grid(ax_p)
+        theme.title(ax_p, "Signal across the field")
+        theme.legend(ax_p, where="top")
         self.canvas.draw_idle()
 
         if meas.found:
@@ -502,22 +501,18 @@ class SemTab(QtWidgets.QWidget):
             )
 
     def _draw_xsection(self, sem: SEMImage, src: str, across: str,
-                       floor: str) -> None:
+                       floor: str, cut: str = "") -> None:
         fig = self.figure
         fig.clf()
         ax = fig.add_subplot(111)
         x0, x1, y0, y1 = sem.extent_nm
         vmax = float(np.percentile(sem.image, 99.5))
-        ax.imshow(sem.image, origin="lower", cmap="gray", extent=(x0, x1, y0, y1),
-                  vmin=0.0, vmax=max(vmax, 1e-6), aspect="auto",
-                  interpolation="nearest")
-        ax.set_xlabel(f"{across} [nm]")
-        ax.set_ylabel(f"z [nm]  ({floor} at 0)")
-        ax.set_title(
-            f"cross-section SEM of the {src} — {sem.electrons:.0f} e⁻/px, "
-            f"SNR {sem.snr:.1f}",
-            fontsize=10,
-        )
+        theme.physical_image(ax, sem.image, (x0, x1, y0, y1), CMAP.micrograph,
+                             vmin=0.0, vmax=max(vmax, 1e-6), aspect="auto",
+                             xlabel=f"{across} [nm]", ylabel=f"z [nm], {floor} at 0")
+        where = f"{cut} · " if cut else ""
+        theme.title(ax, f"Cross-section SEM of the {src}",
+                    caption_text=f"{where}{sem.electrons:.0f} e⁻/px · SNR {sem.snr:.1f}")
         self.canvas.draw_idle()
         self.readout.setText("")
         if not self.from_stack:

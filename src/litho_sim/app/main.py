@@ -52,6 +52,7 @@ from litho_sim.app.params import (
 from litho_sim.app.qt import QtCore, QtGui, QtWidgets
 from litho_sim.app.sem_tab import SemTab
 from litho_sim.app.simulate_tab import SimulateTab
+from litho_sim.app.solid_view import SolidView, install_surface_format
 from litho_sim.app.stack_tab import StackTab
 from litho_sim.app.step_tab import StepTab
 from litho_sim.app.views import (
@@ -235,10 +236,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.step_tabs["Mask"].panel.refresh_mask_models()
 
         if spec.stage == "view":
-            # z-exaggeration and render detail change the picture, not the
-            # physics. Redraw from the volume already in hand.
-            if self._profile is not None and self._is_3d:
-                self._draw_profile()
+            # Z exaggeration changes the picture, not the physics — and not
+            # even the mesh: it is a scale on the actors, so it is live.
+            self.profile_view.set_z_exaggeration(float(self.model["z_exaggeration"]))
             return
 
         if spec.stage == "mask":
@@ -350,8 +350,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._profile,
             self._profile_grid,
             z_exaggeration=float(self.model["z_exaggeration"]),
-            downsample=int(self.model["downsample"]),
-            render_mode=str(self.model["render_mode"]),
         )
 
     @QtCore.Slot(object)
@@ -361,9 +359,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._profile_params, self._inflight_profile = self._inflight_profile, None
         # There is now something to adopt, so the button stops being greyed out.
         self.stack_tab.import_btn.setEnabled(True)
-        # Drawing the mesh costs more than computing it, so say so rather
-        # than appearing to hang.
-        self.status.showMessage(profile.summary + "  — rendering…")
         self._draw_profile()
         # Asking for the 3-D profile is asking to see it. Flip the Develop
         # tab to 3-D so the run lands somewhere visible.
@@ -457,12 +452,11 @@ class MainWindow(QtWidgets.QMainWindow):
             (lambda s, _n=name: sectioned(_n, s))
             if self.act_section.isChecked() else None
         )
-        self.stack_tab.load_stack(stack, label=label, downsample=1, flow=flow,
-                                  section=section)
+        self.stack_tab.load_stack(stack, label=label, flow=flow, section=section)
         self.tabs.setCurrentWidget(self.stack_tab)
         steps = f"{len(flow)} steps  —  " if flow is not None else ""
         self.status.showMessage(
-            f"{label}  —  {steps}drag inside the view to rotate"
+            f"{label}  —  {steps}drag to rotate, scroll to zoom, r reframes"
         )
 
     def _open_wafer(self) -> None:
@@ -479,7 +473,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self, "Could not open wafer", f"{Path(path).name}:\n{exc}")
             return
-        self.stack_tab.load_stack(stack, label=Path(path).name, downsample=1)
+        self.stack_tab.load_stack(stack, label=Path(path).name)
         self.tabs.setCurrentWidget(self.stack_tab)
         self.status.showMessage(f"opened {Path(path).name}")
 
@@ -551,11 +545,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         self.thread.quit()
         self.thread.wait(2000)
+        # The render windows go before Qt tears down their GL contexts —
+        # the other order is the classic VTK exit-time crash.
+        self.profile_view.shutdown()
+        self.stack_tab.view.shutdown()
         super().closeEvent(event)
 
 
 def main(stack=None, label: str = "printed device",
-         downsample: int = 1, flow=None, section=None) -> int:
+         flow=None, section=None) -> int:
     """Open the app.
 
     Parameters
@@ -566,8 +564,6 @@ def main(stack=None, label: str = "printed device",
         device flows that produce one.
     label : str
         Shown against the scrubber's loaded position.
-    downsample : int
-        Mesh stride for the preloaded wafer.
     flow : DeviceFlow, optional
         The recipe that built *stack*, so the Wafer Stack panel lists its steps
         and the scrubber can walk them.
@@ -575,11 +571,15 @@ def main(stack=None, label: str = "printed device",
         ``Stack -> Stack``, cutting the device open for the 3-D view.
     """
     logging.getLogger("litho_sim").setLevel(logging.WARNING)
+    # Before the QApplication: the GL surface format is read when the first
+    # window is created and cannot be changed afterwards.
+    install_surface_format()
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     window = MainWindow()
+    if not SolidView.available:
+        logger.warning("3-D views are off: %s", "pyvista/pyvistaqt not installed")
     if stack is not None:
-        window.stack_tab.load_stack(stack, label=label, downsample=downsample,
-                                    flow=flow, section=section)
+        window.stack_tab.load_stack(stack, label=label, flow=flow, section=section)
         window.tabs.setCurrentWidget(window.stack_tab)
     window.show()
     # PyQt5 spells it exec_(); Qt6 bindings and PyQt5>=5.15 have exec().
