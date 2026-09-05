@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests scripts
+      - run: mypy src/litho_sim
+
+  test:
+    name: pytest (${{ matrix.python }}${{ matrix.slow && ', with slow' || '' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            slow: false
+          - python: "3.12"
+            slow: true
+          - python: "3.13"
+            slow: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # The engine plus the test tooling. The desktop app's Qt tests skip
+      # themselves when no binding is installed, so PySide6 is left out of
+      # the matrix to keep the runs short.
+      - run: pip install -e ".[dev]"
+      - name: fast suite
+        if: ${{ !matrix.slow }}
+        run: pytest -m "not slow" -q
+      - name: full suite
+        if: ${{ matrix.slow }}
+        run: pytest -q
+
+  metrology:
+    name: wafer-metrology-engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e "wafer-metrology-engine[dev]"
+      - run: pytest wafer-metrology-engine/tests -q
