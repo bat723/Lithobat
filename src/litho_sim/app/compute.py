@@ -458,6 +458,7 @@ def compute_profile_3d(
             dose=params.dose,
             standing_waves=params.standing_waves,
             develop_model=params.develop_model,
+            bake="car" if params.resist_model == "car" else "gaussian",
         )
         remaining, latent = result["remaining"], result["latent"]
     else:

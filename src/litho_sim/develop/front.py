@@ -75,7 +75,7 @@ from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["arrival_time", "develop_front"]
+__all__ = ["arrival_time", "arrival_time_front", "develop_front"]
 
 #: Arrival times start here — large enough to act as "unreached", small enough
 #: that squaring it will not overflow float64.
@@ -290,46 +290,35 @@ def arrival_time(
     return T
 
 
-def develop_front(
+def arrival_time_front(
     rate: NDArray[np.float64],
     dz_nm: float,
     pixel_nm: float,
-    develop_time: float,
-    tone: str = "positive",
     ray_march_guess: bool = True,
-) -> NDArray[np.bool_]:
-    """Develop a 3-D rate field with a laterally mobile front.
+) -> NDArray[np.float64]:
+    """When the laterally mobile front finishes dissolving each voxel [s].
 
-    The drop-in replacement for the vertical ray march in
-    :func:`~litho_sim.develop.resist3d.develop_3d`, differing in exactly one
-    way that matters: the front may travel sideways, so resist can be undercut.
+    The continuous field :func:`develop_front` thresholds: resist remains
+    where this exceeds the develop time. Kept separate so a develop-time
+    sweep, a sub-pixel CD at any depth, or a roughness measurement can read
+    the crossing off the field instead of a binary volume.
 
     Parameters
     ----------
     rate : NDArray
-        ``(nz, ny, nx)`` dissolution rate [nm/s], ``iz = 0`` at the substrate.
+        ``(nz, ny, nx)`` dissolution rate [nm/s], ``iz = 0`` at the
+        substrate, already evaluated for the tone in hand — the rate the
+        developer actually meets.
     dz_nm, pixel_nm : float
         Voxel height and lateral pitch [nm].
-    develop_time : float
-        Seconds in the developer.
-    tone : str
-        ``"positive"`` dissolves the exposed resist; ``"negative"`` inverts the
-        rate field first, as everywhere else in the engine.
     ray_march_guess : bool
         Seed the relaxation with the vertical ray march. It is a valid upper
         bound and it is already nearly right wherever the front is vertical,
         which is most of the volume — worth roughly an order of magnitude in
         iterations. Turning it off is for tests that want the solver judged on
         its own.
-
-    Returns
-    -------
-    NDArray[bool]
-        True where resist **remains**, matching ``develop_3d``'s convention.
     """
     rate = np.asarray(rate, dtype=np.float64)
-    if tone == "negative":
-        rate = rate.max() - rate + rate.min()
 
     # A ghost plane above the film carries the boundary condition, so that
     # T counts the time to *dissolve* a voxel rather than to arrive at its
@@ -349,9 +338,57 @@ def develop_front(
             np.zeros_like(rate[-1:]),
         ], axis=0)
 
-    T = arrival_time(
+    return arrival_time(
         rate_g, spacing=(dz_nm, pixel_nm, pixel_nm), seed=seed, initial=guess
     )[:-1]
+
+
+def develop_front(
+    rate: NDArray[np.float64],
+    dz_nm: float,
+    pixel_nm: float,
+    develop_time: float,
+    tone: str = "positive",
+    ray_march_guess: bool = True,
+) -> NDArray[np.bool_]:
+    """Develop a 3-D rate field with a laterally mobile front.
+
+    The drop-in replacement for the vertical ray march in
+    :func:`~litho_sim.develop.resist3d.develop_3d`, differing in exactly one
+    way that matters: the front may travel sideways, so resist can be undercut.
+
+    Parameters
+    ----------
+    rate : NDArray
+        ``(nz, ny, nx)`` dissolution rate [nm/s], ``iz = 0`` at the
+        substrate — the rate the developer meets, so for a negative resist
+        the caller evaluates the rate law on the *exposed* fraction (as
+        :func:`~litho_sim.develop.resist3d.develop_3d` does) before calling.
+    dz_nm, pixel_nm : float
+        Voxel height and lateral pitch [nm].
+    develop_time : float
+        Seconds in the developer.
+    tone : str
+        Must be ``"positive"``. The rate field already encodes the tone;
+        an earlier ``"negative"`` branch inverted the field around its own
+        extremes, a data-dependent transformation that is not a rate law
+        and disagreed with every other negative-tone path in the engine.
+    ray_march_guess : bool
+        Seed the relaxation with the vertical ray march — see
+        :func:`arrival_time_front`.
+
+    Returns
+    -------
+    NDArray[bool]
+        True where resist **remains**, matching ``develop_3d``'s convention.
+    """
+    if tone != "positive":
+        raise ValueError(
+            "develop_front takes the rate the developer meets; evaluate the "
+            "Mack law on the exposed fraction for a negative resist "
+            "(develop_3d does this) rather than passing tone='negative'."
+        )
+    T = arrival_time_front(rate, dz_nm, pixel_nm, ray_march_guess=ray_march_guess)
     remaining = T > develop_time
     logger.debug(
         "develop_front: %.1f%% remains after %.1f s",

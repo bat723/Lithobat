@@ -121,5 +121,11 @@ def apply_peb_3d(
     if s_lat <= 0 and s_ver <= 0:
         return latent.copy()
     sigma = (s_ver / grid.dz, s_lat / grid.pixel_size, s_lat / grid.pixel_size)
-    out = gaussian_filter(latent, sigma=sigma, mode="nearest")
+    # Reflecting faces conserve the latent image: acid that reaches the film
+    # top or the substrate stays in the film, which is what a bake does. The
+    # 2-D path has always reflected; this used "nearest", which is not
+    # mass-conserving and, with a 20 nm blur in a 45 nm film, left the whole
+    # film boundary-influenced (audit finding 17). Laterally the grid is
+    # periodic, like the aerial image it came from.
+    out = gaussian_filter(latent, sigma=sigma, mode=("reflect", "wrap", "wrap"))
     return np.clip(out, 0.0, 1.0)

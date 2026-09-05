@@ -178,13 +178,28 @@ def test_fast_kinetics_stay_finite_and_bounded():
     assert np.all(out["protected"] <= 1.0)
 
 
-def test_reaction_limited_cap_stays_finite():
-    """Capping at max_steps when only the *reaction* timescale wants more
-    steps is a documented accuracy trade — the result must stay finite and
-    non-negative, never NaN."""
+def test_a_fast_quench_no_longer_sets_the_step():
+    """Neutralisation is integrated exactly, so a violent quench costs one
+    step and lands on the closed form: with twice as much acid as base, half
+    the acid survives and no base does."""
     out = bake_reaction_diffusion(
         np.full((8, 8), 1.0), PX, 10.0, 0.0,
         quencher=0.5, k_quench=1e5, max_steps=50,
+    )
+    assert out["steps"] == 1
+    np.testing.assert_allclose(out["acid"], 0.5, atol=1e-12)
+    np.testing.assert_allclose(out["quencher"], 0.0, atol=1e-12)
+    for key in ("acid", "quencher", "protected"):
+        assert np.all(np.isfinite(out[key])) and np.all(out[key] >= 0.0)
+
+
+def test_reaction_limited_cap_stays_finite():
+    """Capping at max_steps when only the deprotection's *accuracy* wants
+    more steps is a documented trade — the result must stay finite and
+    non-negative, never NaN."""
+    out = bake_reaction_diffusion(
+        np.full((8, 8), 1.0), PX, 10.0, 0.0,
+        k_amp=1e5, max_steps=50,
     )
     assert out["steps"] == 50
     for key in ("acid", "quencher", "protected"):

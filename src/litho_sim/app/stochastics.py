@@ -34,6 +34,7 @@ from litho_sim.analysis import (
     failure_rate,
     measure_lcdu,
     measure_line_roughness,
+    pool_roughness,
 )
 from litho_sim.app.compute import build_mask
 from litho_sim.app.params import ParameterModel
@@ -146,6 +147,8 @@ def compute_stochastics(
     # batch is reproducible and each trial reports progress as it lands,
     # which a single stochastic_trials(trials=N) call could not.
     trials = np.empty((req.trials, *aerial.shape), dtype=np.float64)
+    depths = np.empty_like(trials)
+    level = float(resist.thickness * 1e9)
     first_sample = None
     for i in range(req.trials):
         res = stochastic_trials(
@@ -153,34 +156,22 @@ def compute_stochastics(
             trials=1, seed=req.seed + i,
         )
         trials[i] = res.resist[0]
+        depths[i] = res.depth[0]
         if i == 0:
             first_sample = res.sample
         tick()
     assert first_sample is not None
 
-    lcdu = measure_lcdu(trials, grid.pixel_size)
+    # Geometry is read off the continuous develop-depth field with sub-pixel
+    # crossings; the binary images serve topology only. A binary edge sits
+    # on a half-pixel, and at the app's 4 nm grid that read a 1.3 nm LER as
+    # 0.1 nm — the panel used to report the grid, not the resist.
+    lcdu = measure_lcdu(depths, grid.pixel_size, threshold=level, feature="below")
     fails = failure_rate(trials, reference)
-
-    # Roughness pooled over trials: one image's LER is itself ±15 % at a
-    # 20 nm correlation length, so the panel reports the mean of the batch.
-    per_trial = [measure_line_roughness(t, grid.pixel_size) for t in trials]
-    finite = [r for r in per_trial if np.isfinite(r.ler)]
-    if finite:
-        # ξ can be NaN on a trial whose edge never decorrelates even when
-        # its σ is fine, so it pools over its own finite subset.
-        xi = [r.corr_length for r in finite if np.isfinite(r.corr_length)]
-        pooled = LineRoughness(
-            ler=float(np.mean([r.ler for r in finite])),
-            lwr=float(np.mean([r.lwr for r in finite])),
-            sigma_left=float(np.mean([r.sigma_left for r in finite])),
-            sigma_right=float(np.mean([r.sigma_right for r in finite])),
-            corr_length=float(np.mean(xi)) if xi else float("nan"),
-            cd_mean=float(np.mean([r.cd_mean for r in finite])),
-            n_rows=int(np.mean([r.n_rows for r in finite])),
-        )
-    else:
-        nan = float("nan")
-        pooled = LineRoughness(nan, nan, nan, nan, nan, nan, 0)
+    pooled = pool_roughness([
+        measure_line_roughness(d, grid.pixel_size, threshold=level, feature="below")
+        for d in depths
+    ])
 
     label = (
         f"{params['pattern']} · pitch {params['pitch']:.0f} nm · "

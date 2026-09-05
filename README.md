@@ -31,12 +31,18 @@ the same imaging turns fixed optics into a few dozen eigen-kernels for loops
 that only change the mask.
 
 **Resist.** Dill exposure with bleaching, Gaussian post-exposure bake or full
-acid/quencher reaction–diffusion, Mack dissolution, threshold development. In
-3-D: depth-resolved exposure, Beer–Lambert absorption, substrate standing
-waves through a transfer-matrix film stack, a vertical ray develop and an
-eikonal moving front that can undercut. **Stochastics**: photon shot noise
-and molecular counting propagated through the chemistry to line-edge
-roughness.
+acid/quencher reaction–diffusion (the neutralisation solved exactly, so the
+bake costs what diffusion costs), Mack dissolution, threshold development.
+In 3-D: depth-resolved exposure, Beer–Lambert absorption, substrate standing
+waves through a transfer-matrix film stack, the same chemistry through the
+film, a vertical ray develop and an eikonal moving front that can undercut,
+and a calibration that finds dose-to-size and develop time for a profile
+rather than guessing them. **Stochastics**: photon shot noise, acid-yield
+variance and molecular counting propagated through the chemistry, with
+dissolution noise in the developer, to line-edge and line-width roughness,
+local CD uniformity, bridges, breaks and residue — in 2-D, and through the
+film as roughness per plane, footing and top-loss scatter. Every roughness
+number is read off a continuous field with sub-pixel crossings.
 
 **Wafer.** A voxel film stack with conformal and selective deposition,
 selective and anisotropic etch with profiles, lateral etch, strip and CMP.
@@ -113,6 +119,7 @@ script under `scripts/` for the invocations the notes have always used.
 | `litho-sim multipatterning` | LELE pitch walking versus overlay, SADP, SADP with a cut mask | `multipatterning_demo.png`, `sadp_cut_demo.png` |
 | `litho-sim vector` | the polarisation effect at hyper-NA: the cos 2θ law and the images | `vector_effect.png` |
 | `litho-sim device gaa` / `nfet` | build a printed device and verify it structurally; `--calibrate` sweeps dose, `--figure` draws every step | `gaa_steps.png` |
+| `litho-sim stochastic` | print the same exposure many times: LER, LWR, correlation length, LCDU, bridges, breaks and residue; `--profile` adds 3-D trials and roughness through the film | `stochastic_demo.png` |
 
 ```bash
 litho-sim demo --node ArF_immersion --pitch 90 --cd 45 --threshold 0.6
@@ -120,7 +127,11 @@ litho-sim window --node EUV --pitch 40 --cd 20 --tolerance 10
 litho-sim opc --sraf                          # scattering bars first
 litho-sim opc --node EUV --pitch 40 --cd 20 --diffusion-nm 5
 litho-sim device gaa --figure results/gaa_steps.png
+litho-sim demo --node EUV --pitch 64 --cd 32 --develop-model mack --calibrate --bake car
+litho-sim stochastic --profile          # EUV 32 nm lines, 2-D and through the film
 ```
+
+![Stochastic printing: trials, probability map, and roughness through the film](results/stochastic_demo.png)
 
 ![The GAA nanosheet flow, one panel per step](results/gaa_steps.png)
 
@@ -207,6 +218,16 @@ eikonal equation.
 
 ![A developed 3-D resist profile](results/resist_profile_3d.png)
 
+**Stochastics.** A trial draws Poisson photons per voxel, Poisson PAG and
+quencher molecules, and the acid as Poisson conversion events per absorbed
+photon (about 5.5 at EUV for the preset, 0.86 at 193 nm), bakes the sampled
+fields through the same reaction–diffusion equation the deterministic model
+uses, and develops with a log-normal dissolution scatter on the rate. No
+noise parameter is asserted except the dissolution term, which is a fit.
+Through the film the same chain runs per voxel of the depth-resolved
+exposure, and the developed volume's arrival-time field is measured plane
+by plane.
+
 **Measurement.** CD is the sub-pixel threshold crossing of the continuous
 latent field, not the width of a binarised image. NILS is
 $\mathrm{CD}\,|\mathrm{d}\ln I/\mathrm{d}x|$ at the edge. The process window is
@@ -229,6 +250,9 @@ Measured on an Apple Silicon laptop, default ArF preset, 197 source points.
 | 3-D resist profile, 21 planes | 0.49 s |
 | OPC print through kernels, 128 px | 6 ms |
 | OPC print through kernels, 256 px | 50 ms |
+| Reaction–diffusion bake, 64 px | 7 ms |
+| Stochastic 3-D trial, 48 × 48 × 12 voxels | 20 ms |
+| Profile calibration, 128 px, 21 planes | 3 s |
 
 The Abbe loop batches every source point's transform into one call to the
 FFT library, which runs them across all cores; a depth-resolved exposure

@@ -5,14 +5,36 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from litho_sim.core.config import TECH_NODE_PRESETS
+from litho_sim.core.config import RESIST_LIBRARY, TECH_NODE_PRESETS
 
 NODES = tuple(TECH_NODE_PRESETS)
+RESISTS = tuple(RESIST_LIBRARY)
+
+#: The resist a node runs by default: a conventional resist at i-line, the
+#: chemically amplified formulation at DUV, the thin EUV formulation at EUV.
+#: The demo used to print every node in the i-line/DUV "Generic Positive"
+#: film, which at EUV is a 100 nm bleaching resist that no EUV tool exposes.
+RESIST_FOR_NODE = {
+    "i-line": "Generic Positive",
+    "KrF": "CAR (Positive)",
+    "ArF": "CAR (Positive)",
+    "ArF_immersion": "CAR (Positive)",
+    "EUV": "EUV CAR (Positive)",
+}
+
+
+def resist_for(args: argparse.Namespace) -> str:
+    """The resist preset a command should use: ``--resist`` if given, else the node's."""
+    chosen = getattr(args, "resist", None)
+    return chosen if chosen else RESIST_FOR_NODE[args.node]
 
 
 def add_node_arg(p: argparse.ArgumentParser, default: str = "ArF") -> None:
     p.add_argument("--node", default=default, choices=NODES,
                    help="technology-node preset")
+    p.add_argument("--resist", default=None, choices=RESISTS,
+                   help="resist preset (default: the node's usual one — a conventional "
+                        "resist at i-line, the CAR at DUV, the EUV CAR at EUV)")
 
 
 def add_output_args(p: argparse.ArgumentParser, default: str | Path = "results") -> None:

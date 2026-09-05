@@ -59,6 +59,12 @@ TECH_NODE_PRESETS: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 RESIST_LIBRARY: dict[str, dict[str, Any]] = {
+    # Mack dissolution parameters follow the published fits rather than
+    # round numbers: a selectivity of a few thousand between exposed and
+    # unexposed resist, which the contrast exponent sets. Under the old
+    # n = 4 the unexposed centre of a 100 nm line dissolved at 3.8 nm/s and
+    # a 5 s develop took 19 nm off its top; at n = 8 the same latent
+    # develops at 0.26 nm/s and the top stays flat.
     "Generic Positive": {
         "tone": "positive",
         "threshold": 0.30,
@@ -66,9 +72,9 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
         "dill_B": 0.05,
         "dill_C": 0.04,
         "mack_Rmax": 100.0,
-        "mack_Rmin": 0.01,
+        "mack_Rmin": 0.05,
         "mack_Mth": 0.50,
-        "mack_n": 4,
+        "mack_n": 8,
         "diffusion_sigma": 20e-9,
         "use_stochastic": False,
         "stochastic_sigma": 1e-9,
@@ -76,22 +82,31 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
     "CAR (Positive)": {
         "tone": "positive",
         "threshold": 0.25,
-        "dill_A": 0.50,
-        "dill_B": 0.02,
+        # Absorbance of a 193 nm CAR is ~1.2 /µm, nearly all of it
+        # non-bleaching. The 0.52 /µm this carried implied 2.4 acids per
+        # absorbed photon — a 6.4 eV photon makes at most one — and it is
+        # the number the yield-noise model samples, so it had to be physical.
+        # At 1.2 /µm the same C gives 0.86.
+        "dill_A": 0.30,
+        "dill_B": 0.90,
         "dill_C": 0.06,
         "mack_Rmax": 200.0,
-        "mack_Rmin": 0.001,
+        "mack_Rmin": 0.02,
         "mack_Mth": 0.40,
-        "mack_n": 6,
-        "diffusion_sigma": 30e-9,
+        "mack_n": 10,
+        # Acid diffusion length of a modern ArF CAR: ~15 nm. The 30 nm this
+        # carried (and the matching D_acid) blurred a 45 nm line at 90 nm
+        # pitch into nothing — no dose printed it.
+        "diffusion_sigma": 15e-9,
         "use_stochastic": False,
         "stochastic_sigma": 1e-9,
         # CAR chemistry (develop model "car"). A KrF/ArF-class formulation:
-        # moderate PAG loading, base quencher at 10 % of it.
+        # moderate PAG loading, base quencher at 10 % of it. D_acid × bake
+        # time gives the same 15 nm, sqrt(2·D·t), as diffusion_sigma above.
         "pag_density": 2.0e26,
         "quencher_ratio": 0.10,
         "bake_time": 60.0,
-        "D_acid": 4.0e-18,
+        "D_acid": 1.9e-18,
         "k_quench": 20.0,
         "k_amp": 0.05,
     },
@@ -105,10 +120,13 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
         "dill_B": 4.0,
         "dill_C": 0.05,
         "mack_Rmax": 150.0,
-        "mack_Rmin": 0.001,
+        "mack_Rmin": 0.02,
         "mack_Mth": 0.60,
-        "mack_n": 8,
-        "diffusion_sigma": 20e-9,
+        "mack_n": 12,
+        # EUV CARs hold the acid to ~6 nm: at 64 nm pitch a 20 nm blur, which
+        # this preset used to carry, left no latent contrast at the film
+        # bottom and the spaces never opened.
+        "diffusion_sigma": 6e-9,
         "use_stochastic": False,
         "stochastic_sigma": 1e-9,
         # Thin film — EUV resists run 30–50 nm to hold aspect ratio.
@@ -116,11 +134,11 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
         # Heavier PAG and quencher loadings than DUV: photons are ~14x more
         # energetic and ~14x scarcer at equal dose, so the formulation fights
         # shot noise with more acid per absorption and more base to sharpen
-        # the confinement.
+        # the confinement. D_acid × bake time gives the 6 nm above.
         "pag_density": 3.0e26,
         "quencher_ratio": 0.20,
         "bake_time": 60.0,
-        "D_acid": 3.0e-18,
+        "D_acid": 3.0e-19,
         "k_quench": 20.0,
         "k_amp": 0.05,
         # Photoelectron / secondary-electron range: acid is generated where
@@ -134,9 +152,9 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
         "dill_B": 0.04,
         "dill_C": 0.03,
         "mack_Rmax": 80.0,
-        "mack_Rmin": 0.01,
+        "mack_Rmin": 0.05,
         "mack_Mth": 0.55,
-        "mack_n": 3,
+        "mack_n": 6,
         "diffusion_sigma": 25e-9,
         "use_stochastic": False,
         "stochastic_sigma": 1e-9,
@@ -539,6 +557,29 @@ class ResistConfig:
         Photoelectron blur [m].  At EUV a 92 eV absorption releases an
         electron cascade and the acid appears where the cascade thermalises,
         a few nm away.  0 disables it, which is right for DUV.
+    acid_yield_noise : bool
+        Sample the number of PAG conversions each absorbed photon causes
+        (Poisson about the resist's events-per-photon constant) rather than
+        converting a smooth share of the sampled exposure. Adds the yield's
+        own variance to the photon shot noise — a second noise source a
+        stochastic EUV model needs — and changes nothing in the mean. Only
+        the stochastic trials read it.
+    dissolution_sigma : float
+        Relative 1-σ scatter of the dissolution rate, applied per trial as a
+        log-normal field with mean 1 (``exp(σξ − σ²/2)``). This is
+        development noise: the front eats polymer in granules, not a
+        continuum, and real roughness has a component that no photon count
+        removes — it is why ArF lines are not perfectly smooth. The value is
+        the scatter of one granule (a region one correlation length across);
+        a voxel sees the average over the granules it spans. Fitted, not
+        derived: with the CAR preset's 60 nm ArF-immersion lines at 3.9 nm
+        3σ LER from counting alone, 0.3 adds about 0.6 nm and 1.0 nearly
+        doubles them; measured ArF-immersion lines sit at 3–5 nm. 0 turns it
+        off. Only the stochastic trials read it; the deterministic paths see
+        the mean.
+    dissolution_corr_length : float
+        1/e correlation length of that scatter [m] — the scale of the
+        polymer aggregates the developer resolves, a few nanometres.
     thickness : float
         As-coated resist film thickness [m].  Sets the z extent of the 3-D
         exposure volume and the depth the develop front must clear.
@@ -596,9 +637,9 @@ class ResistConfig:
     dill_B: float = 0.05
     dill_C: float = 0.04
     mack_Rmax: float = 100.0
-    mack_Rmin: float = 0.01
+    mack_Rmin: float = 0.05
     mack_Mth: float = 0.50
-    mack_n: int = 4
+    mack_n: int = 8
     # Surface inhibition — the induction period, as an empirical depth
     # dependence rather than a second moving-boundary solve. Off by default,
     # so nothing that exists today moves.
@@ -620,6 +661,9 @@ class ResistConfig:
     k_amp: float = 0.05
     k_loss: float = 0.0
     electron_blur_sigma: float = 0.0
+    acid_yield_noise: bool = True
+    dissolution_sigma: float = 0.3
+    dissolution_corr_length: float = 5e-9
     thickness: float = 100e-9
     develop_time: float = 5.0
     dose_nominal: float = 30.0
@@ -651,9 +695,12 @@ class ResistConfig:
         _bounded(r, "inhibition_rate", self.inhibition_rate, 0.0, 1.0, lo_open=True)
         for name in ("diffusion_sigma", "stochastic_sigma", "quencher_ratio",
                      "bake_time", "D_acid", "D_quencher", "k_quench", "k_amp",
-                     "k_loss", "electron_blur_sigma", "thickness", "develop_time"):
+                     "k_loss", "electron_blur_sigma", "thickness", "develop_time",
+                     "dissolution_sigma"):
             _bounded(r, name, getattr(self, name), 0.0)
         _bounded(r, "stochastic_corr_length", self.stochastic_corr_length, 0.0,
+                 lo_open=True)
+        _bounded(r, "dissolution_corr_length", self.dissolution_corr_length, 0.0,
                  lo_open=True)
         _bounded(r, "pag_density", self.pag_density, 0.0, lo_open=True)
         _bounded(r, "dose_nominal", self.dose_nominal, 0.0, lo_open=True)

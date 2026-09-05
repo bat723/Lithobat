@@ -11,6 +11,8 @@ One parser, one subcommand per thing the engine can do from a terminal:
 ``multipatterning``  LELE pitch walking, SADP, and SADP with a cut mask
 ``vector``         the polarisation effect at hyper-NA, law and images
 ``device``         build a printed device (``gaa`` or ``nfet``) and verify it
+``stochastic``     print the same exposure many times: LER, LWR, LCDU, failures,
+                   and with ``--profile`` the roughness through the film
 =================  ==========================================================
 
 Every command lives in its own module as an ``add_parser``/``run`` pair and
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def build_parser() -> argparse.ArgumentParser:
     """The complete parser, with every command registered."""
-    from litho_sim.cli import basic, device, multipatterning, opc, vector
+    from litho_sim.cli import basic, device, multipatterning, opc, stochastic, vector
 
     parser = argparse.ArgumentParser(
         prog="litho-sim",
@@ -40,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     subs = parser.add_subparsers(dest="command", metavar="COMMAND")
     subs.required = True
-    for module in (basic, opc, multipatterning, vector, device):
+    for module in (basic, opc, multipatterning, vector, device, stochastic):
         module.add_parser(subs)
     return parser
 

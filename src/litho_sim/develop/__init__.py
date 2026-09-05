@@ -8,8 +8,10 @@ when the vector-imaging work lands; import from this package, not the
 modules, to stay insulated from that split.
 """
 
+from litho_sim.develop.calibrate import Calibration, calibrate_profile, profile_cd
 from litho_sim.develop.front import (
     arrival_time,
+    arrival_time_front,
     develop_front,
 )
 from litho_sim.develop.profile import (
@@ -21,6 +23,7 @@ from litho_sim.develop.profile import (
     top_loss,
 )
 from litho_sim.develop.resist import (
+    cleared_depth,
     develop_field,
     dill_exposure,
     feature_edges,
@@ -33,31 +36,39 @@ from litho_sim.develop.resist import (
     threshold_development,
 )
 from litho_sim.develop.resist3d import (
+    BAKE_MODELS,
     add_standing_waves,
     apply_absorption,
     apply_vertical_interference,
+    arrival_field,
     develop_3d,
+    dissolution_rate_3d,
     effective_defocus,
     exposure_volume,
     focus_reference_depth,
+    latent_volume,
     print_resist_3d,
     sidewall_angle,
     tmm_standing_waves,
     write_resist_to_stack,
 )
 from litho_sim.develop.stochastic import (
+    StochasticProfileResult,
     StochasticResult,
     add_edge_roughness,
     stochastic_trials,
+    stochastic_trials_3d,
 )
 
 __all__ = [
     "remaining_thickness", "just_clearing_time",
-    "develop_field", "dill_exposure", "feature_edges", "mack_development_rate",
+    "cleared_depth", "develop_field", "dill_exposure", "feature_edges", "mack_development_rate",
     "measure_cd_1d", "measure_cd_2d",
     "simulate_resist", "threshold_development",
-    "arrival_time", "develop_front",
+    "arrival_time", "arrival_time_front", "develop_front",
+    "Calibration", "calibrate_profile", "profile_cd", "arrival_field", "dissolution_rate_3d",
     "StochasticResult", "add_edge_roughness", "stochastic_trials",
+    "StochasticProfileResult", "stochastic_trials_3d", "latent_volume", "BAKE_MODELS",
     "add_standing_waves", "apply_absorption", "apply_vertical_interference",
     "develop_3d", "effective_defocus", "exposure_volume", "focus_reference_depth",
     "print_resist_3d", "sidewall_angle", "tmm_standing_waves", "write_resist_to_stack",

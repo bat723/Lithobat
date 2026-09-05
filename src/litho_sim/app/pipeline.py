@@ -142,11 +142,10 @@ class Pipeline:
         if hit is not None:
             return hit
 
-        from litho_sim.bake import apply_peb_3d
         from litho_sim.develop.resist3d import (
-            apply_absorption,
             apply_vertical_interference,
             exposure_volume,
+            latent_volume,
         )
 
         grid, optics, resist = params.grid(), params.optics(), params.resist()
@@ -158,6 +157,8 @@ class Pipeline:
         # `intensity` already carries the dose, so absorption must not apply
         # it again — passing it twice makes every dose sweep quadratic. Same
         # rule print_resist_3d follows.
-        pac, _ = apply_absorption(intensity, resist, grid.dz, dose=1.0)
-        latent = apply_peb_3d(pac, resist, grid)
+        # The car resist model bakes in 3-D with the same acid/quencher
+        # chemistry the 2-D path runs; the other models take the Gaussian.
+        bake = "car" if params.resist_model == "car" else "gaussian"
+        latent = latent_volume(intensity, resist, grid, bake=bake)["latent"]
         return self._put("profile_latent", sig, (latent, z))

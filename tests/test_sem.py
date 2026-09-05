@@ -410,8 +410,10 @@ def test_the_sem_cd_agrees_with_the_printed_profile_at_half_height():
     m = ParameterModel()
     m.set("n_pixels", 96)
     m.set("source_grid", 7)
-    m.set("pitch", 256.0)
-    m.set("cd", 128.0)
+    # Two pitches on the 384 nm field: a line that wraps the field edge has
+    # no closed feature for the reference width to measure.
+    m.set("pitch", 192.0)
+    m.set("cd", 96.0)
     r = compute_imaging(m)
     height = r.thickness_nm * 1e-9
     film = r.film_nm * 1e-9

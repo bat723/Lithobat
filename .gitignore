@@ -39,6 +39,7 @@ results/*
 !results/vector_effect.png
 !results/multipatterning_demo.png
 !results/process_window.png
+!results/stochastic_demo.png
 
 # The autoencoder study's talk material and result previews — regenerable
 # from the ml extra, and not part of the engine.

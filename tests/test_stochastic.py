@@ -205,6 +205,9 @@ def test_euv_trials_scatter_and_arf_trials_dont(soft_aerial, car_cfg, grid):
     import dataclasses
 
     dense = dataclasses.replace(car_cfg, pag_density=3.0e27)
+    # This is a statement about photon counting, so the development noise —
+    # which is wavelength-blind by construction — is switched off for it.
+    dense = dataclasses.replace(dense, dissolution_sigma=0.0)
     euv = stochastic_trials(soft_aerial, dense, grid, 13.5e-9, trials=2, seed=9)
     arf = stochastic_trials(soft_aerial, dense, grid, 193e-9, trials=2, seed=9)
 

@@ -27,7 +27,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from litho_sim.cli.common import add_litho_args, add_sweep_args
+from litho_sim.cli.common import add_litho_args, add_sweep_args, resist_for
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def run_demo(args: argparse.Namespace) -> None:
     logger.info("=== LithoPy Demo ===")
     logger.info("Node=%s  pitch=%.0f nm  CD=%.0f nm", args.node, args.pitch, args.cd)
 
-    cfg = SimulationConfig.from_tech_node(args.node, name="demo")
+    cfg = SimulationConfig.from_tech_node(args.node, resist_name=resist_for(args), name="demo")
     cfg = _apply_common_overrides(cfg, args)
     mask = lines_and_spaces(
         cfg.grid.n_pixels, cfg.grid.pixel_size,
@@ -115,11 +115,36 @@ def run_demo(args: argparse.Namespace) -> None:
             resist3d_cfg = dataclasses.replace(
                 cfg.resist, substrate_reflectance=args.standing_waves
             )
+        dose3d = 1.0
+        if args.calibrate and args.develop_model != "threshold":
+            # Dose-to-size at mid-film and a develop time set from the time
+            # to clear — the two numbers a preset cannot know for this
+            # pattern, and the difference between a stump and a line.
+            from litho_sim.develop import calibrate_profile
+
+            cal = calibrate_profile(
+                mask, cfg.optics, cfg.grid, resist3d_cfg, args.cd,
+                develop_model=args.develop_model,
+                standing_waves=args.standing_waves is not None,
+                bake=args.bake,
+            )
+            resist3d_cfg, dose3d = cal.resist, cal.dose
+            logger.info(
+                "Calibrated: dose %.3f, develop %.2f s (%.1fx the %.2f s clear "
+                "time); CD bottom/mid/top %.1f/%.1f/%.1f nm%s",
+                cal.dose, cal.develop_time, cal.develop_time / cal.clear_time,
+                cal.clear_time, cal.cd_nm["bottom"], cal.cd_nm["mid"], cal.cd_nm["top"],
+                "" if cal.converged else " (not converged)",
+            )
+        elif args.calibrate:
+            logger.warning("--calibrate needs a finite-rate develop model; "
+                           "pass --develop-model mack or front")
         res3 = print_resist_3d(
             mask, cfg.optics, cfg.grid, resist3d_cfg,
-            dose=1.0,
+            dose=dose3d,
             standing_waves=args.standing_waves is not None,
             develop_model=args.develop_model,
+            bake=args.bake,
         )
         angle = sidewall_angle(res3["remaining"], cfg.grid)
         logger.info(
@@ -152,7 +177,7 @@ def run_bossung(args: argparse.Namespace) -> None:
     from litho_sim.viz.plots import plot_bossung_curves, save_figure
 
     logger.info("=== Bossung Curve Sweep ===")
-    cfg = SimulationConfig.from_tech_node(args.node, name="bossung")
+    cfg = SimulationConfig.from_tech_node(args.node, resist_name=resist_for(args), name="bossung")
     cfg = _apply_common_overrides(cfg, args)
     mask = lines_and_spaces(
         cfg.grid.n_pixels, cfg.grid.pixel_size,
@@ -204,7 +229,9 @@ def run_window(args: argparse.Namespace) -> None:
     )
 
     logger.info("=== Process Window Analysis ===")
-    cfg = SimulationConfig.from_tech_node(args.node, name="process_window")
+    cfg = SimulationConfig.from_tech_node(
+        args.node, resist_name=resist_for(args), name="process_window"
+    )
     cfg = _apply_common_overrides(cfg, args)
 
     bossung_df, pw = run_full_analysis(
@@ -287,8 +314,17 @@ def add_parser(subs) -> None:
                              "Without this flag the preset's reflectance — "
                              "usually 0, a perfect BARC — applies.")
     p_demo.add_argument("--develop-model", default="threshold",
-                        choices=["threshold", "mack"],
-                        help="3-D develop model (mack = finite-rate ray develop)")
+                        choices=["threshold", "mack", "front"],
+                        help="3-D develop model: threshold, mack (finite-rate ray "
+                             "march) or front (eikonal front, can undercut)")
+    p_demo.add_argument("--bake", default="gaussian", choices=["gaussian", "car"],
+                        help="3-D bake: the Gaussian PEB, or the acid/quencher "
+                             "reaction-diffusion chemistry of a chemically amplified "
+                             "resist")
+    p_demo.add_argument("--calibrate", action="store_true",
+                        help="Find dose-to-size at mid-film and a develop time from "
+                             "the time to clear before printing the 3-D profile "
+                             "(finite-rate models only)")
     p_demo.set_defaults(func=run_demo)
 
     p_bos = subs.add_parser("bossung", help="Generate Bossung curves")

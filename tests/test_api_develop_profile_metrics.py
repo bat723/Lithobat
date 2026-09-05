@@ -145,7 +145,10 @@ def test_an_overdeveloped_mack_profile_shows_real_top_loss():
     depth_gain = np.linspace(0.6, 1.0, NZ)  # iz = 0 is the film bottom
     intensity = depth_gain[:, None, None] * (aerial[None, None, :] + 0.18)
 
-    cfg = dataclasses.replace(RESIST, develop_time=10.0)
+    # 200 s: the recalibrated Mack contrast (n = 8) dissolves the unexposed
+    # line centre at a fraction of a nanometre per second, so it takes a
+    # long over-develop, not 10 s, to take a measurable slice off the top.
+    cfg = dataclasses.replace(RESIST, develop_time=200.0)
     pac = dill_exposure(intensity, dose=cfg.dose_nominal, dill_C=cfg.dill_C)
     remaining = develop_3d(pac, cfg, GRID, model="mack")
 

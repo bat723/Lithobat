@@ -92,6 +92,12 @@ MODULE_CONCEPTS: dict[str, list[str]] = {
     "coat/films": ["Thin-Film Interference", "Standing Waves"],
     "bake/peb": ["Standing Waves", "Development Models"],
     "develop/resist": ["Dill Exposure Model", "Development Models"],
+    "develop/calibrate": ["Profile Calibration", "Development Models"],
+    "develop/stochastic": ["Stochastic Printing", "Roughness Metrics"],
+    "develop/front": ["Moving Front Development"],
+    "develop/profile": ["The 2-D Profile", "Profile Calibration"],
+    "bake/reaction": ["Reaction-Diffusion Bake", "Stochastic Printing"],
+    "expose/photochem": ["Photon Statistics", "Stochastic Printing"],
     "develop/resist3d": ["Defocus and Depth", "Dill Exposure Model", "Standing Waves",
                          "Development Models"],
     "wafer/stack": ["Self-Aligned Patterning", "Engine"],
@@ -117,6 +123,7 @@ MODULE_CONCEPTS: dict[str, list[str]] = {
     "cli/vector": ["Vector Imaging"],
     "cli/multipatterning": ["Self-Aligned Patterning", "Overlay and Pitch Walking"],
     "cli/device": ["Printing a GAA Transistor", "Printing a Planar nFET"],
+    "cli/stochastic": ["Stochastic Printing", "Roughness Metrics", "Profile Calibration"],
 }
 
 

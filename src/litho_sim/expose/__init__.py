@@ -25,9 +25,12 @@ from litho_sim.expose.photochem import (
     SpeciesSample,
     absorbed_fraction,
     generate_acid,
+    generate_acid_3d,
     mean_absorbed_photons,
+    mean_absorbed_photons_3d,
     photon_energy,
     sample_species,
+    sample_species_3d,
 )
 from litho_sim.expose.pupil import pupil_grid, zernike_noll
 from litho_sim.expose.source import SOURCE_PRESETS, Pole, Source
@@ -53,4 +56,7 @@ __all__ = [
     "mean_absorbed_photons",
     "photon_energy",
     "sample_species",
+    "generate_acid_3d",
+    "mean_absorbed_photons_3d",
+    "sample_species_3d",
 ]

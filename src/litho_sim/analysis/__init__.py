@@ -28,11 +28,15 @@ from litho_sim.analysis.stochastics import (
     DefectCounts,
     FailureStats,
     LineRoughness,
+    ProfileRoughness,
     count_defects,
     edge_positions,
     failure_rate,
     measure_lcdu,
     measure_line_roughness,
+    pool_roughness,
+    profile_roughness,
+    trial_roughness,
 )
 
 __all__ = [
@@ -43,5 +47,6 @@ __all__ = [
     "run_full_analysis", "sweep_dose_focus",
     "CDUniformity", "DefectCounts", "FailureStats", "LineRoughness",
     "count_defects", "edge_positions", "failure_rate", "measure_lcdu",
-    "measure_line_roughness",
+    "measure_line_roughness", "pool_roughness", "trial_roughness",
+    "ProfileRoughness", "profile_roughness",
 ]

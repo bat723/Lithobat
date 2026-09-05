@@ -30,7 +30,7 @@ import time
 
 import numpy as np
 
-from litho_sim.cli.common import add_node_arg
+from litho_sim.cli.common import add_node_arg, resist_for
 from litho_sim.core.config import GridConfig, SimulationConfig
 from litho_sim.mask import Layout, Polygon, Rect, line_array
 from litho_sim.opc import PrintModel, add_scattering_bars, assist_features_printed, run_opc
@@ -74,7 +74,8 @@ def add_parser(subs) -> None:
     ap.add_argument("--pixels", type=int, default=256, help="grid side [px]")
     ap.add_argument("--pixel-nm", type=float, default=None,
                     help="pixel size [nm]; default makes the field 6.4 pitches wide")
-    ap.add_argument("--resist", default="threshold", choices=["threshold", "mack", "car"])
+    ap.add_argument("--resist-model", default="threshold", choices=["threshold", "mack", "car"],
+                    help="resist model the print model corrects against")
     ap.add_argument("--diffusion-nm", type=float, default=None,
                     help="PEB diffusion length [nm]; the preset's 20 nm swallows a 40 nm "
                          "pitch, so an EUV run wants ~5")
@@ -89,7 +90,7 @@ def add_parser(subs) -> None:
 
 def run(args: argparse.Namespace) -> int:
 
-    cfg = SimulationConfig.from_tech_node(args.node)
+    cfg = SimulationConfig.from_tech_node(args.node, resist_name=resist_for(args))
     if args.diffusion_nm is not None:
         cfg.resist.diffusion_sigma = args.diffusion_nm * 1e-9
     px = args.pixel_nm * 1e-9 if args.pixel_nm else 6.4 * args.pitch * 1e-9 / args.pixels
@@ -98,7 +99,7 @@ def run(args: argparse.Namespace) -> int:
     length = 0.7 * grid.grid_size
 
     design = build_layout(pitch, cd, length)
-    model = PrintModel(cfg.optics, cfg.resist, grid, tone="dark", model=args.resist)
+    model = PrintModel(cfg.optics, cfg.resist, grid, tone="dark", model=args.resist_model)
 
     # Dose-to-size on the dense array — the anchor every real process uses.
     anchor = Layout(line_array(7, pitch=pitch, cd=cd, length=0.9 * grid.grid_size))

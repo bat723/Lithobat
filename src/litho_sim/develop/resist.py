@@ -185,6 +185,41 @@ def surface_inhibition(
     return rate * factor.reshape((nz,) + (1,) * (rate.ndim - 1))
 
 
+def cleared_depth(
+    latent: NDArray[np.float64],
+    cfg: ResistConfig,
+) -> NDArray[np.float64]:
+    """Depth the developer clears at every point, in nanometres.
+
+    ``rate × develop_time`` under the Mack rate law, evaluated on the
+    *protection* the developer meets: the latent itself for a positive
+    resist, and its complement for a negative one, where exposure is what
+    makes the polymer insoluble. Resist remains wherever this falls short of
+    the film thickness — in both tones — so this is the continuous field
+    every binary developed image, every 2-D profile and every stochastic
+    trial is a level set of.
+
+    Parameters
+    ----------
+    latent : NDArray
+        Post-bake latent image, ``(ny, nx)``: PAC after the Gaussian bake,
+        or the protected fraction after the reaction–diffusion bake; 1 means
+        unexposed in either.
+    cfg : ResistConfig
+        Supplies the Mack rate parameters, ``develop_time`` and ``tone``.
+
+    Returns
+    -------
+    NDArray[np.float64]
+        Cleared depth [nm], ``>= 0``, uncapped.
+    """
+    protection = latent if cfg.tone == "positive" else 1.0 - np.asarray(latent)
+    rate = mack_development_rate(
+        protection, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
+    )
+    return rate * cfg.develop_time
+
+
 def remaining_thickness(
     latent: NDArray[np.float64],
     cfg: ResistConfig,
@@ -221,16 +256,8 @@ def remaining_thickness(
         Remaining thickness [nm], clipped to ``[0, thickness]``.
     """
     pac = dill_exposure(latent, cfg.dose_nominal, cfg.dill_C)
-    rate = mack_development_rate(
-        pac, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
-    )
-    if cfg.tone == "negative":
-        rate = mack_development_rate(
-            1.0 - pac, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
-        )
     thickness_nm = cfg.thickness * 1e9
-    cleared_nm = rate * cfg.develop_time
-    return np.clip(thickness_nm - cleared_nm, 0.0, thickness_nm)
+    return np.clip(thickness_nm - cleared_depth(pac, cfg), 0.0, thickness_nm)
 
 
 def just_clearing_time(cfg: ResistConfig) -> float:
@@ -336,19 +363,16 @@ def _mack_binary(
     ``rate × develop_time`` of depth, and resist survives where that fails
     to reach the substrate.
 
-    Negative tone is the positive result inverted. That is the same
-    convention :func:`develop_field` exposes (its field always rises with
-    exposure and the caller picks the side), and it is an approximation: a
-    real negative-tone rate law is on the roadmap, and
-    :func:`remaining_thickness` — the app's continuous profile — already
-    evaluates the rate on the exposed fraction instead.
+    Both tones go through :func:`cleared_depth`: the developer meets the
+    protection it meets — the latent for a positive resist, its complement
+    for a negative one, where exposure is what makes the polymer insoluble
+    — and resist remains wherever the depth it clears falls short of the
+    film. Until 2026-09-05 negative tone was the positive result inverted,
+    which is not a rate law and disagreed with the 2-D profile and the 3-D
+    developer (audit finding 13); all three now say the same thing.
     """
-    rate = mack_development_rate(
-        latent, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
-    )
-    cleared_nm = rate * cfg.develop_time
-    remaining = (cleared_nm < cfg.thickness * 1e9).astype(np.float64)
-    return remaining if cfg.tone == "positive" else 1.0 - remaining
+    cleared_nm = cleared_depth(latent, cfg)
+    return (cleared_nm < cfg.thickness * 1e9).astype(np.float64)
 
 
 def simulate_resist(
@@ -442,7 +466,11 @@ def develop_field(
     through here so there is exactly one definition of "what printed".
 
     The field always increases with exposure: the bright side of a mask
-    edge is the side where ``field > threshold``, whatever the model.
+    edge is the side where ``field > threshold``, whatever the model and
+    whichever the tone. For a negative resist under the chemistry models
+    the developer clears *less* where the light was, so the field returned
+    is the film thickness minus the cleared depth against a level of zero —
+    rising with exposure, resist where it is positive.
 
     Parameters
     ----------
@@ -476,8 +504,11 @@ def develop_field(
         return apply_peb(aerial, cfg.diffusion_sigma, grid.pixel_size), float(cfg.threshold)
 
     _, latent = _bake(aerial, cfg, grid, model)
-    rate = mack_development_rate(latent, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n)
-    return rate * cfg.develop_time, float(cfg.thickness * 1e9)
+    depth = cleared_depth(latent, cfg)
+    thickness_nm = float(cfg.thickness * 1e9)
+    if cfg.tone == "positive":
+        return depth, thickness_nm
+    return thickness_nm - depth, 0.0
 
 
 # ---------------------------------------------------------------------------

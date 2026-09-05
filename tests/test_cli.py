@@ -13,7 +13,8 @@ import pytest
 
 from litho_sim.cli import build_parser, main
 
-COMMANDS = ("demo", "bossung", "window", "opc", "multipatterning", "vector", "device")
+COMMANDS = ("demo", "bossung", "window", "opc", "multipatterning", "vector", "device",
+            "stochastic")
 
 
 def test_every_command_is_registered():

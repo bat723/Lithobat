@@ -31,9 +31,14 @@ Writing ``H`` for acid, ``Q`` for quencher and ``M`` for protected sites:
     \\partial_t Q &= D_Q \\nabla^2 Q - k_q H Q \\\\
     \\partial_t M &= -k_{amp} H M
 
-Integrated explicitly, with the step size chosen from the diffusion stability
-limit. This is genuinely a coupled two-species field with a non-linear sink —
-the thing the develop step turned out *not* to be. Development has a moving
+Integrated by operator splitting: diffusion explicitly, with the step size
+chosen from its stability limit, and the neutralisation **exactly** — second-
+order kinetics has a closed form over a step, so the fast quench never sets
+the step size. Before 2026-09-05 the quench was explicit too, and with
+``k_quench = 20`` it forced 3,000 steps where diffusion needed 70; in 3-D that
+was the difference between a bake in seconds and one in minutes. This is
+genuinely a coupled two-species field with a non-linear sink — the thing the
+develop step turned out *not* to be. Development has a moving
 boundary whose speed is prescribed by a frozen field (see
 :mod:`litho_sim.develop.front`); the bake has no moving boundary at all but
 does have fields that must be solved. The two are easy to mix up and they want
@@ -62,6 +67,34 @@ __all__ = ["bake_reaction_diffusion", "diffusion_length"]
 #: off to 40 % of the limit costs a few extra steps and removes any argument
 #: about marginal stability.
 _SAFETY = 0.4
+
+
+def _quench_exact(
+    H: NDArray[np.float64], Q: NDArray[np.float64], kt: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Acid and quencher after neutralising for ``k·t``, exactly.
+
+    ``dH/dt = dQ/dt = −k H Q`` conserves ``d = H − Q``. With ``d ≠ 0``::
+
+        H(t) = d · H₀ / (H₀ − Q₀ · exp(−k d t)),   Q(t) = H(t) − d
+
+    and with equal concentrations ``H(t) = H₀ / (1 + k H₀ t)``. Both are
+    monotone and stay non-negative for any step, which is what lets the
+    step size ignore the quench rate entirely. Where ``|k d t|`` is tiny
+    the two forms agree to rounding and the equal-concentration one is used
+    to avoid a 0/0.
+    """
+    d = H - Q
+    x = np.clip(kt * d, -700.0, 700.0)
+    equal = np.abs(x) < 1e-9
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        denom = H - Q * np.exp(-x)
+        unequal = np.where(np.abs(denom) > 0.0, d * H / denom, 0.0)
+        same = H / (1.0 + kt * H)
+    H_new = np.where(equal, same, unequal)
+    H_new = np.clip(H_new, 0.0, np.maximum(H, Q))
+    Q_new = np.maximum(H_new - d, 0.0)
+    return H_new, Q_new
 
 
 def diffusion_length(D: float, time: float) -> float:
@@ -159,10 +192,10 @@ def bake_reaction_diffusion(
         dt_diff = _SAFETY * h_min * h_min / (2.0 * acid.ndim * D_max)
     else:
         dt_diff = bake_time
-    # The reaction terms have their own timescale; a fast quench with a coarse
-    # step would overshoot into negative concentrations.
-    rate_scale = max(k_quench * max(float(H.max()), float(Q.max()), 1e-30),
-                     k_loss, k_amp * float(H.max()), 1e-30)
+    # Neutralisation and loss are integrated exactly within a step, so only
+    # the deprotection's accuracy (acid changing during a step) bounds dt
+    # beyond diffusion — and with k_amp × H of order 0.05 /s it never binds.
+    rate_scale = max(k_amp * float(H.max()), 1e-30)
     dt = min(dt_diff, _SAFETY / rate_scale, bake_time)
     n_steps = max(int(np.ceil(bake_time / dt)), 1)
     if n_steps > max_steps:
@@ -223,11 +256,15 @@ def bake_reaction_diffusion(
     loss_factor = np.exp(-k_loss * dt) if k_loss > 0.0 else 1.0
 
     for _ in range(n_steps):
-        # Neutralisation is genuinely non-linear in both species, so it stays
-        # explicit — and it is what sets the step size when it is fast.
-        react = k_quench * H * Q
-        H = np.maximum(H + dt * (D_acid * _lap(H) - react), 0.0)
-        Q = np.maximum(Q + dt * (D_quencher * _lap(Q) - react), 0.0)
+        # Diffusion, explicit: this is what the step size was chosen for.
+        if D_acid > 0.0:
+            H = np.maximum(H + dt * D_acid * _lap(H), 0.0)
+        if D_quencher > 0.0:
+            Q = np.maximum(Q + dt * D_quencher * _lap(Q), 0.0)
+        # Neutralisation, exact over the step: H + Q → nothing is second-
+        # order kinetics with H − Q conserved, and that has a closed form.
+        if k_quench > 0.0:
+            H, Q = _quench_exact(H, Q, k_quench * dt)
         if k_loss > 0.0:
             H *= loss_factor
         if k_amp > 0.0:

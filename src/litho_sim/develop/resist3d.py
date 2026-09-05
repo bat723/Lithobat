@@ -50,8 +50,9 @@ from numpy.typing import NDArray
 from scipy.ndimage import label
 
 from litho_sim.bake.peb import apply_peb_3d
+from litho_sim.bake.reaction import bake_reaction_diffusion
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
-from litho_sim.develop.front import develop_front
+from litho_sim.develop.front import arrival_time_front
 from litho_sim.develop.resist import mack_development_rate, surface_inhibition
 from litho_sim.expose.aerial_image import compute_aerial_planes
 from litho_sim.wafer import VACUUM, get_material
@@ -281,7 +282,13 @@ def add_standing_waves(
     bottom anti-reflective coatings exist.
 
     Setting ``resist.substrate_reflectance`` to 0 (a perfect BARC) makes this
-    a no-op.
+    a no-op. The reflectance is a magnitude; the reflection carries the π
+    phase of a wave meeting a denser medium (silicon under resist), so the
+    interface is a **node** — the standing wave's dark plane sits at the
+    substrate, which is where the foot of a positive resist line comes from.
+    Until 2026-09-05 the phase was omitted and the substrate was an
+    antinode, inverting the polarity of the footing failure (audit finding
+    14); the transfer-matrix path had it right, and the two now agree.
 
     Parameters
     ----------
@@ -310,7 +317,8 @@ def add_standing_waves(
     # Downward wave has travelled (thickness - z); the reflected wave has
     # travelled (thickness - z) + 2z. Their interference gives the fringe.
     down = np.exp(-1j * k * (thickness - z))
-    up = r * np.exp(-1j * k * (thickness + z))
+    # −r: the reflection off a denser substrate flips the field.
+    up = -r * np.exp(-1j * k * (thickness + z))
     envelope = np.abs(down + up) ** 2
     envelope /= envelope.mean()  # preserve the dose, only redistribute it
 
@@ -439,8 +447,163 @@ def apply_vertical_interference(
 
 
 # ---------------------------------------------------------------------------
+# Step 4b – the latent volume, either bake
+# ---------------------------------------------------------------------------
+
+BAKE_MODELS = ("gaussian", "car")
+
+
+def latent_volume(
+    intensity: NDArray[np.float64],
+    resist: ResistConfig,
+    grid: GridConfig,
+    bake: str = "gaussian",
+    bleaching: bool = True,
+    species=None,
+) -> dict:
+    """Absorb and bake a depth-resolved intensity into the latent volume.
+
+    Parameters
+    ----------
+    intensity : NDArray
+        ``(nz, ny, nx)`` intensity, dose included, bottom-up.
+    resist, grid
+        The film and its voxels.
+    bake : str
+        ``"gaussian"`` — Dill exposure, then the Gaussian PEB of
+        :func:`~litho_sim.bake.peb.apply_peb_3d`: a conventional resist.
+        ``"car"`` — acid generation from the local dose, then the 3-D
+        acid/quencher reaction–diffusion bake with catalytic deprotection,
+        the same chemistry the 2-D ``model="car"`` runs; the latent is the
+        protected fraction. Until 2026-09-05 the 3-D path had only the
+        Gaussian, so a CAR preset's quencher — the thing that sets its
+        contrast — never reached a profile.
+    bleaching : bool
+        Solve the coupled Dill equations rather than freezing absorption.
+    species : SpeciesSample, optional
+        A sampled acid and quencher volume from
+        :func:`~litho_sim.expose.photochem.sample_species_3d`, which the
+        ``"car"`` bake starts from instead of the mean field — how a
+        stochastic profile trial enters.
+
+    Returns
+    -------
+    dict
+        ``pac`` (after absorption), ``exposure`` (local incident dose,
+        mJ/cm²), ``acid`` (``"car"`` only, before the bake) and ``latent``
+        (after the bake — PAC or protected fraction, 1 = unexposed).
+    """
+    if bake not in BAKE_MODELS:
+        raise ValueError(f"bake must be one of {list(BAKE_MODELS)}, got {bake!r}")
+    pac, exposure = apply_absorption(intensity, resist, grid.dz, dose=1.0, bleaching=bleaching)
+    out = {"pac": pac, "exposure": exposure}
+    if bake == "gaussian":
+        out["latent"] = apply_peb_3d(pac, resist, grid)
+        return out
+    from litho_sim.expose.photochem import generate_acid_3d
+
+    if species is None:
+        acid = generate_acid_3d(exposure, resist, grid.pixel_size, grid.dz)
+        quencher: float | NDArray[np.float64] = resist.quencher_ratio
+    else:
+        acid, quencher = species.acid, species.quencher
+    baked = bake_reaction_diffusion(
+        acid,
+        grid.pixel_size,
+        resist.bake_time,
+        resist.D_acid,
+        quencher=quencher,
+        D_quencher=resist.D_quencher,
+        k_quench=resist.k_quench,
+        k_loss=resist.k_loss,
+        k_amp=resist.k_amp,
+        spacing=(grid.dz, grid.pixel_size, grid.pixel_size),
+    )
+    out["acid"] = acid
+    out["latent"] = baked["protected"]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Step 5 – development
 # ---------------------------------------------------------------------------
+
+
+def dissolution_rate_3d(
+    latent: NDArray[np.float64], resist: ResistConfig, grid: GridConfig
+) -> NDArray[np.float64]:
+    """The rate the developer meets at every voxel [nm/s].
+
+    Mack's rate law on the protection the developer sees — the latent for a
+    positive resist, its complement for a negative one, where exposure is
+    what makes the polymer insoluble — with the surface-inhibition depth
+    dependence on top. The one definition both finite-rate models share.
+    """
+    source = 1.0 - latent if resist.tone == "negative" else latent
+    rate = mack_development_rate(
+        source, resist.mack_Rmax, resist.mack_Rmin, resist.mack_Mth, resist.mack_n,
+    )
+    return surface_inhibition(
+        rate, grid.dz * 1e9, resist.inhibition_depth, resist.inhibition_rate,
+    )
+
+
+def arrival_field(
+    latent: NDArray[np.float64],
+    resist: ResistConfig,
+    grid: GridConfig,
+    model: str = "mack",
+    rate_scale: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], float, str]:
+    """The continuous field a developed volume is a level set of.
+
+    Returns ``(field, level, feature)``: resist remains where the field is
+    on the *feature* side of *level*. For the finite-rate models the field
+    is the time the developer takes to finish each voxel and the level is
+    the develop time, so resist is ``"above"``; for the threshold model the
+    field is the latent itself against ``mack_Mth`` (``"above"`` for a
+    positive resist, ``"below"`` for a negative one).
+
+    This is what a sub-pixel CD at any depth, a develop-time sweep, or a
+    roughness measurement should read — a binary volume only knows an edge
+    to the nearest voxel.
+
+    Parameters
+    ----------
+    latent : NDArray
+        ``(nz, ny, nx)`` post-bake latent image, bottom-up.
+    resist, grid
+        As for :func:`develop_3d`.
+    model : str
+        ``"mack"`` (vertical ray march: ``∫dz/R`` down each column),
+        ``"front"`` (the eikonal front, which can undercut), or
+        ``"threshold"``.
+    rate_scale : NDArray, optional
+        A per-voxel multiplier on the dissolution rate — the stochastic
+        trials' development noise. Ignored by the threshold model.
+    """
+    if model == "threshold":
+        feature = "above" if resist.tone == "positive" else "below"
+        return np.array(latent, dtype=np.float64), float(resist.mack_Mth), feature
+    if model not in ("mack", "front"):
+        raise ValueError(
+            f"Unknown develop model '{model}'. Choose 'threshold', 'mack' or 'front'."
+        )
+    rate = dissolution_rate_3d(latent, resist, grid)
+    if rate_scale is not None:
+        rate = rate * rate_scale
+    dz_nm = grid.dz * 1e9
+    if model == "front":
+        # The front travels normal to itself, so it can undercut. Same rate
+        # law, different geometry — and the only route to an overhang, since
+        # a ray march develops each column in isolation.
+        T = arrival_time_front(rate, dz_nm, grid.pixel_size * 1e9)
+    else:
+        t_voxel = dz_nm / np.maximum(rate, 1e-12)  # seconds to dissolve one voxel
+        # Time for the front to finish this voxel = everything above it, plus
+        # itself. The array is bottom-up, so accumulate from the top.
+        T = np.cumsum(t_voxel[::-1], axis=0)[::-1]
+    return T, float(resist.develop_time), "above"
 
 
 def develop_3d(
@@ -491,34 +654,11 @@ def develop_3d(
             raise ValueError(
                 f"develop_3d(model={model!r}) requires a GridConfig for dz"
             )
-        source = 1.0 - latent if resist.tone == "negative" else latent
-        # Negative tone: exposed material is the part that survives, so the
-        # dissolution rate runs the other way.
-        rate = mack_development_rate(
-            source, resist.mack_Rmax, resist.mack_Rmin,
-            resist.mack_Mth, resist.mack_n,
-        )
-        rate = surface_inhibition(
-            rate, grid.dz * 1e9,
-            resist.inhibition_depth, resist.inhibition_rate,
-        )
-        if model == "front":
-            # The front travels normal to itself, so it can undercut. Same
-            # rate law, different geometry — and the only route to an
-            # overhang, since a ray march develops each column in isolation.
-            return develop_front(
-                rate, grid.dz * 1e9, grid.pixel_size * 1e9,
-                resist.develop_time, tone="positive",
-            )
-        dz_nm = grid.dz * 1e9
-        t_voxel = dz_nm / np.maximum(rate, 1e-12)  # seconds to dissolve one voxel
-        # Time for the front to finish this voxel = everything above it, plus
-        # itself. The array is bottom-up, so accumulate from the top.
-        t_cum = np.cumsum(t_voxel[::-1], axis=0)[::-1]
-        remaining = t_cum > resist.develop_time
+        T, level, _ = arrival_field(latent, resist, grid, model=model)
+        remaining = T > level
         logger.debug(
-            "Develop (mack ray): %.1f%% remains after %.0f s",
-            100.0 * float(remaining.mean()), resist.develop_time,
+            "Develop (%s): %.1f%% remains after %.0f s",
+            model, 100.0 * float(remaining.mean()), resist.develop_time,
         )
         return remaining
 
@@ -563,6 +703,7 @@ def print_resist_3d(
     standing_waves: bool = True,
     bleaching: bool = True,
     develop_model: str = "threshold",
+    bake: str = "gaussian",
 ) -> dict:
     """Run the whole 3-D resist pipeline for one exposure.
 
@@ -579,13 +720,15 @@ def print_resist_3d(
     bleaching : bool
         Solve the coupled Dill equations rather than freezing absorption.
     develop_model : str
-        ``"threshold"`` or ``"mack"`` — see :func:`develop_3d`.
+        ``"threshold"``, ``"mack"`` or ``"front"`` — see :func:`develop_3d`.
+    bake : str
+        ``"gaussian"`` or ``"car"`` — see :func:`latent_volume`.
 
     Returns
     -------
     dict
-        ``intensity``, ``pac`` (after absorption), ``latent`` (after PEB),
-        ``remaining`` (bool, True = resist left), and ``z``.
+        ``intensity``, ``pac`` (after absorption), ``latent`` (after the
+        bake), ``remaining`` (bool, True = resist left), and ``z``.
     """
     intensity, z = exposure_volume(mask, optics, grid, resist, dose=dose)
     if standing_waves:
@@ -594,10 +737,8 @@ def print_resist_3d(
     # into the aerial image), so the absorption step must not apply it again —
     # passing it in both places double-counts and makes every dose sweep
     # quadratic. Same rule as the 2-D engine's simulate_resist().
-    pac, _ = apply_absorption(
-        intensity, resist, grid.dz, dose=1.0, bleaching=bleaching
-    )
-    latent = apply_peb_3d(pac, resist, grid)
+    vol = latent_volume(intensity, resist, grid, bake=bake, bleaching=bleaching)
+    pac, latent = vol["pac"], vol["latent"]
     remaining = develop_3d(latent, resist, grid, model=develop_model)
 
     frac = float(remaining.mean())
@@ -688,16 +829,23 @@ def sidewall_angle(
 ) -> float:
     """Estimate the sidewall angle of the centre feature [degrees].
 
-    Measures the printed width at 10 % and 90 % of the remaining film height
-    and converts the difference into an angle.  90° is a perfectly vertical
-    wall; smaller values slope outward at the base (the normal positive-tone
-    result, since the top of the film absorbs the most light).
+    Measures the width of the feature nearest the field centre at 10 % and
+    90 % of the remaining film height and converts the difference into an
+    angle.  90° is a perfectly vertical wall; smaller values slope outward
+    at the base (the normal positive-tone result, since the top of the film
+    absorbs the most light).
+
+    Until 2026-09-05 this summed the widths of *every* feature in the row,
+    so on a lines-and-spaces field of two and a half lines the run was two
+    and a half times too large and a 62° wall reported as 41°.
 
     Returns
     -------
     float
         Angle in degrees, or ``nan`` if no feature is found.
     """
+    from litho_sim.develop.resist import feature_edges
+
     nz, ny, nx = remaining.shape
     r = ny // 2 if row is None else row
     prof = remaining[:, r, :]
@@ -710,10 +858,20 @@ def sidewall_angle(
     if height <= 0:
         return float("nan")
 
+    def width(iz: int) -> float:
+        row = prof[iz].astype(np.float64)
+        edges = feature_edges(row, 0.5, feature="above")
+        if edges is None:
+            # No crossing: the plane is either solid (an uncleared floor, or
+            # an untouched film — full width) or empty.
+            return nx * grid.pixel_size if row.all() else 0.0
+        return (edges[1] - edges[0]) * grid.pixel_size
+
     i_lo = int(z_lo + 0.1 * (z_hi - z_lo))
     i_hi = int(z_lo + 0.9 * (z_hi - z_lo))
-    w_lo = float(prof[i_lo].sum()) * grid.pixel_size
-    w_hi = float(prof[i_hi].sum()) * grid.pixel_size
+    w_lo, w_hi = width(i_lo), width(i_hi)
+    if w_lo == 0.0 and w_hi == 0.0:
+        return float("nan")
 
     run = (w_lo - w_hi) / 2.0
     rise = 0.8 * height
