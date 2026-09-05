@@ -288,7 +288,8 @@ def build_topography(
         # A leaning wall narrows the absorber upward. Expressed as an effective
         # clear width so the phasing stays the mask's.
         widen = 0.0 if not np.isfinite(slope) else 2.0 * height / slope
-        frac = _absorber_occupancy(coords, m_pitch, min(m_cd + widen, m_pitch), dx)
+        frac = _absorber_occupancy(np.asarray(coords, dtype=np.float64), m_pitch,
+                               min(m_cd + widen, m_pitch), dx)
         # Subpixel averaging, so a moving edge moves smoothly rather than in
         # whole-cell jumps — the same reason rasterize_shapes supersamples.
         #

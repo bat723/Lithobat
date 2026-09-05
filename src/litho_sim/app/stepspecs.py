@@ -39,10 +39,10 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import MISSING, fields
-from typing import Any
+from typing import Any, cast
 
 from litho_sim.app.params import ParamSpec
-from litho_sim.patterning import STEP_REGISTRY, ProcessStep
+from litho_sim.patterning import STEP_REGISTRY, Etch, ProcessStep
 from litho_sim.wafer import MATERIAL_LIBRARY
 
 __all__ = ["STEP_SPECS", "PALETTE", "build_step", "values_for", "readout_for",
@@ -504,15 +504,17 @@ def values_for(step: ProcessStep) -> dict[str, Any]:
             out["stop_on"] = NO_STOP
             out["stop_rate"] = _default_of("etch", "stop_rate")
     elif kind == "cmp":
-        if step.stop_on is not None:
-            out.update(cmp_mode="stop", stop_on=step.stop_on,
-                       depth=30.0, height=100.0)
-        elif step.height is not None:
-            out.update(cmp_mode="height", height=step.height * 1e9,
+        stop_on = getattr(step, "stop_on", None)
+        height = getattr(step, "height", None)
+        depth = getattr(step, "depth", None)
+        if stop_on is not None:
+            out.update(cmp_mode="stop", stop_on=stop_on, depth=30.0, height=100.0)
+        elif height is not None:
+            out.update(cmp_mode="height", height=height * 1e9,
                        depth=30.0, stop_on=_MATERIALS[0])
         else:
             out.update(cmp_mode="depth", stop_on=_MATERIALS[0], height=100.0,
-                       depth=(step.depth or 30e-9) * 1e9)
+                       depth=(depth or 30e-9) * 1e9)
 
     return out
 
@@ -643,9 +645,9 @@ def _apply_synthetic(step: ProcessStep, key: str, values: dict[str, Any]) -> Pro
     if kind == "etch":
         stop = values.get("stop_on", NO_STOP)
         if stop == NO_STOP:
-            return dataclasses.replace(step, selectivity={})
+            return dataclasses.replace(cast(Etch, step), selectivity={})
         rate = float(values.get("stop_rate", _default_of("etch", "stop_rate")))
-        return dataclasses.replace(step, selectivity={stop: rate})
+        return dataclasses.replace(cast(Etch, step), selectivity={stop: rate})
     if kind == "cmp":
         # Exactly one of the three, or `planarize` refuses them as ambiguous.
         mode = values.get("cmp_mode", "depth")

@@ -2,8 +2,8 @@
 LithoPy
 =======
 A photolithography simulation engine organised by processing step: coat →
-expose → bake → develop, patterning flows on a voxel wafer, and the analysis
-on top. Covers the full aerial-image → resist → CD pipeline, 3-D resist
+expose → bake → develop, patterning flows on a voxel wafer, OPC on the mask
+side, and the analysis on top. Covers the full aerial-image → resist → CD pipeline, 3-D resist
 profiles, multi-patterning (LELE/SADP/SAQP), process windows, and Bossung
 curves.
 
@@ -29,6 +29,7 @@ __author__ = "LithoPy Contributors"
 __all__ = [
     "core",        # configs, grids, logging
     "mask",        # geometry, layouts, pixel patterns
+    "opc",         # optical proximity correction: fragments, EPE, the loop, assist features
     "expose",      # pupil, illumination, sources, aerial image
     "coat",        # film-stack optics (TMM, BARC, swing curves)
     "bake",        # PEB diffusion (arrives with the bake/ split)

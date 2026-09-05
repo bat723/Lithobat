@@ -38,6 +38,7 @@ from collections.abc import Callable
 import numpy as np
 
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
+from litho_sim.mask.layout import Layout
 from litho_sim.patterning.steps import ProcessContext, ProcessStep
 from litho_sim.wafer import Stack
 
@@ -89,7 +90,7 @@ class FlowSession:
         grid: GridConfig | None = None,
         optics: OpticsConfig | None = None,
         resist: ResistConfig | None = None,
-        layouts: dict[str, object] | None = None,
+        layouts: dict[str, Layout] | None = None,
         base: Stack | None = None,
     ) -> None:
         self.grid = grid or GridConfig()
@@ -320,7 +321,7 @@ class FlowSession:
         snapshots: list[Stack],
         base: Stack,
         changed: list[bool] | None = None,
-        layouts: dict[str, object] | None = None,
+        layouts: dict[str, Layout] | None = None,
         optics: OpticsConfig | None = None,
         resist: ResistConfig | None = None,
     ) -> None:

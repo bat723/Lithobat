@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -24,6 +25,7 @@ from litho_sim.metrology import (
 )
 from litho_sim.viz import theme
 from litho_sim.viz.theme import CMAP, MUTED, SERIES
+from litho_sim.wafer import Stack
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,7 @@ class SemTab(QtWidgets.QWidget):
         super().__init__(parent)
         self._print: ImagingResult | None = None
         self._profile: tuple[Profile3DResult, object] | None = None
-        self._stack: tuple[object, str] | None = None
+        self._stack: tuple[Stack, str] | None = None
         self._print_stale = False
         self._profile_stale = False
         self.last: SEMImage | None = None
@@ -420,7 +422,7 @@ class SemTab(QtWidgets.QWidget):
         src = f"wafer stack — {label}" if label else "wafer stack"
         # The one knob that names a material maps onto the one material a
         # wafer always has; the rest read their yield off the library.
-        overrides = {"Si": cfg.substrate_yield}
+        overrides: dict[Any, float] = {"Si": cfg.substrate_yield}
         if self.mode == "topdown":
             feature = self.feature.currentText()
             sem = stack_topdown_sem(stack, cfg, overrides=overrides)

@@ -10,13 +10,8 @@ values (which depend on discretisation).  Run with::
 from __future__ import annotations
 
 # Ensure src/ is on the path when running tests directly
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig, OpticsConfig, SimulationConfig
 from litho_sim.expose.aerial_image import compute_aerial_image, extract_cross_section
@@ -89,8 +84,8 @@ def test_defocus_reduces_contrast(small_cfg, ls_mask):
     cfg_focus = small_cfg
     aerial_focus = compute_aerial_image(ls_mask, cfg_focus.optics, cfg_focus.grid)
 
-    import copy
-    defocused_optics = copy.replace(cfg_focus.optics, defocus=300e-9)
+    import dataclasses
+    defocused_optics = dataclasses.replace(cfg_focus.optics, defocus=300e-9)
     aerial_defocus = compute_aerial_image(ls_mask, defocused_optics, cfg_focus.grid)
 
     contrast_focus = float(aerial_focus.max() - aerial_focus.min())

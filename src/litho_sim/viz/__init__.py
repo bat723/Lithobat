@@ -12,6 +12,7 @@ from litho_sim.viz.plots import (
     plot_aerial_image,
     plot_bossung_curves,
     plot_cd_heatmap,
+    plot_opc,
     plot_process_window,
     plot_resist_profile,
     save_figure,
@@ -31,7 +32,7 @@ from litho_sim.viz.viz3d import (
 
 __all__ = [
     "theme", "apply_style", "plot_aerial_image", "plot_bossung_curves", "plot_cd_heatmap",
-    "plot_process_window", "plot_resist_profile", "save_figure",
+    "plot_opc", "plot_process_window", "plot_resist_profile", "save_figure",
     "cross_section_figure", "payload_size",
     "profile_figure", "resist_profile_3d_figure", "resist_surface_mpl",
     "resist_stack_for_display",

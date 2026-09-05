@@ -101,6 +101,7 @@ def build_mask(params: ParameterModel) -> NDArray:
     cd = params.si("cd")
     pattern = params["pattern"]
 
+    mask: NDArray
     if pattern == "lines and spaces":
         mask = lines_and_spaces(n, px, pitch=pitch, cd=cd)
     elif pattern == "contacts":
@@ -242,7 +243,7 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         thickness_nm=thickness_nm,
         cut_thickness=thickness_nm[mid, :],
         film_nm=float(resist_cfg.thickness * 1e9),
-        x_nm=x_nm,
+        x_nm=np.asarray(x_nm, dtype=np.float64),
         cd_nm=cd_m * 1e9,
         nils=float(nils),
         contrast=float(contrast),

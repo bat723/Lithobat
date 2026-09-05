@@ -29,3 +29,19 @@ presets/
 # Obsidian config — the vault lives at docs/ (itself ignored); a stray root
 # vault once put .obsidian/ here and it must never be committed.
 .obsidian/
+
+# Figures every demo rewrites. Only the ones the README shows stay tracked.
+results/*
+!results/opc_demo.png
+!results/gaa_steps.png
+!results/qt_app_window.png
+!results/resist_profile_3d.png
+!results/vector_effect.png
+!results/multipatterning_demo.png
+!results/process_window.png
+
+# The autoencoder study's talk material and result previews — regenerable
+# from the ml extra, and not part of the engine.
+slides/
+/dataset_preview.png
+/mse_distribution.png

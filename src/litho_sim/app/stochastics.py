@@ -199,7 +199,7 @@ def compute_stochastics(
         fails=fails,
         mean_photons=float(first_sample.mean_photons),
         mean_pag=float(first_sample.mean_pag),
-        x_nm=np.arange(grid.n_pixels) * grid.pixel_size * 1e9,
+        x_nm=np.asarray(np.arange(grid.n_pixels) * grid.pixel_size * 1e9, dtype=np.float64),
         label=label,
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
     )

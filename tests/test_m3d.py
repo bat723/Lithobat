@@ -17,12 +17,9 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig, OpticsConfig
 from litho_sim.expose.aerial_image import SOURCE_TILT_SIGN, compute_aerial_image
@@ -106,10 +103,9 @@ def test_thin_is_the_default():
     assert o.mask_stack is None
 
 
-def test_unknown_mask_model_names_the_options(mask, grid):
-    optics = OpticsConfig(mask_model="kirchoff")  # plausible misspelling
+def test_unknown_mask_model_names_the_options():
     with pytest.raises(ValueError, match="mask_model must be one of"):
-        make_spectrum_provider(mask, optics, grid)
+        OpticsConfig(mask_model="kirchoff")  # plausible misspelling
 
 
 def test_no_model_ever_silently_falls_back_to_thin(mask, grid):
@@ -144,7 +140,7 @@ def test_reduction_puts_the_reticle_in_a_slower_cone():
     """Mask-side NA is the wafer NA divided by the demagnification."""
     euv = OpticsConfig(wavelength=13.5e-9, NA=0.33, reduction=4.0)
     assert euv.mask_side_NA == pytest.approx(0.0825)
-    imm = OpticsConfig(wavelength=193e-9, NA=1.35, reduction=4.0)
+    imm = OpticsConfig(wavelength=193e-9, NA=1.35, n_immersion=1.44, reduction=4.0)
     assert imm.mask_side_NA == pytest.approx(0.3375)
 
 
@@ -198,9 +194,8 @@ def test_the_chief_ray_offsets_the_whole_source():
 
 
 def test_chief_ray_axis_is_validated():
-    optics = OpticsConfig(chief_ray_deg=6.0, chief_ray_axis="z")
     with pytest.raises(ValueError, match="chief_ray_axis must be"):
-        mask_side_sin_theta(0.0, 0.0, optics)
+        OpticsConfig(chief_ray_deg=6.0, chief_ray_axis="z")
 
 
 def test_mask_models_are_ordered_cheapest_first():
@@ -801,7 +796,6 @@ def test_the_cache_key_is_stable_across_interpreters():
     name in a *subprocess* is the only check that actually catches it.
     """
     import subprocess
-    import sys
 
     _, optics, grid = _cacheable_fdtd_case()
     from litho_sim.expose.m3d import provider

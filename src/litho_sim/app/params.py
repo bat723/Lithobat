@@ -246,7 +246,7 @@ SPECS: tuple[ParamSpec, ...] = (
               stage="aerial",
               help="Index of the medium the image forms in. Set to the "
                    "resist index to evaluate the vector effect where it "
-                   "physically happens."),
+                   "physically happens. Never below the immersion index."),
     ParamSpec("exact_defocus", "Exact defocus", "bool", False,
               group="Vector", target="optics",
               stage="aerial",
@@ -636,6 +636,11 @@ class ParameterModel:
         # producing plausible-looking nonsense, which is worse than an error,
         # so the invalid state is prevented here instead.
         NA = min(d["NA"], d["n_immersion"])
+        # The image forms in the resist, which is always at least as dense as
+        # the fluid above it — a slider left at 1.00 under water would ask for
+        # an image medium rarer than the immersion, and with it sin θ > 1
+        # inside the film, which OpticsConfig refuses.
+        n_image = max(d["n_image"], d["n_immersion"])
 
         kwargs: dict[str, Any] = {}
         if d["source_type"] == "dipole":
@@ -652,7 +657,7 @@ class ParameterModel:
             source_kwargs=kwargs,
             imaging_model=d["imaging_model"],
             polarisation=d["polarisation"],
-            n_image=d["n_image"],
+            n_image=n_image,
             exact_defocus=d["exact_defocus"],
             normalisation=d["normalisation"],
             mask_model=d["mask_model"],

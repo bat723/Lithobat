@@ -9,16 +9,11 @@ thin wrapper.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
+import matplotlib
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import matplotlib
 
 matplotlib.use("Agg")
 

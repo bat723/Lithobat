@@ -315,7 +315,8 @@ def solve_near_field(
     has_metal = bool(metal.any())
 
     # Field arrays, all (nz, nx).
-    z = lambda: np.zeros((nz, nx), dtype=dtype)  # noqa: E731
+    def z() -> NDArray:
+        return np.zeros((nz, nx), dtype=dtype)
     ex, ey, ez = z(), z(), z()
     hx, hy, hz = z(), z(), z()
     jx, jy, jz = z(), z(), z()  # Drude currents; unused unless metal is present

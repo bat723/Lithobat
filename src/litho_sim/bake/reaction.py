@@ -79,7 +79,7 @@ def bake_reaction_diffusion(
     pixel_size: float,
     bake_time: float,
     D_acid: float,
-    quencher: float = 0.0,
+    quencher: float | NDArray[np.float64] = 0.0,
     D_quencher: float = 0.0,
     k_quench: float = 0.0,
     k_loss: float = 0.0,

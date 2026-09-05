@@ -21,6 +21,7 @@ from litho_sim.develop.profile import (
     top_loss,
 )
 from litho_sim.develop.resist import (
+    develop_field,
     dill_exposure,
     feature_edges,
     just_clearing_time,
@@ -30,11 +31,6 @@ from litho_sim.develop.resist import (
     remaining_thickness,
     simulate_resist,
     threshold_development,
-)
-from litho_sim.develop.stochastic import (
-    StochasticResult,
-    add_edge_roughness,
-    stochastic_trials,
 )
 from litho_sim.develop.resist3d import (
     add_standing_waves,
@@ -49,10 +45,15 @@ from litho_sim.develop.resist3d import (
     tmm_standing_waves,
     write_resist_to_stack,
 )
+from litho_sim.develop.stochastic import (
+    StochasticResult,
+    add_edge_roughness,
+    stochastic_trials,
+)
 
 __all__ = [
     "remaining_thickness", "just_clearing_time",
-    "dill_exposure", "feature_edges", "mack_development_rate",
+    "develop_field", "dill_exposure", "feature_edges", "mack_development_rate",
     "measure_cd_1d", "measure_cd_2d",
     "simulate_resist", "threshold_development",
     "arrival_time", "develop_front",

@@ -683,7 +683,7 @@ def measure_cd_sem(
     prof = gaussian_filter1d(profile, smooth_px, mode="wrap") if smooth_px > 0 else profile
 
     empty = SEMMeasurement(float("nan"), float("nan"), float("nan"), feature,
-                           profile, x, np.empty(0))
+                           profile, np.asarray(x, dtype=np.float64), np.empty(0))
     span = float(prof.max() - prof.min())
     if span <= 0.0:
         return empty
@@ -732,5 +732,5 @@ def measure_cd_sem(
     left, right = min(candidates, key=_dist)
     return SEMMeasurement(
         cd=(right - left) * px, left=left * px, right=right * px,
-        feature=feature, profile=profile, x=x, edges=pos * px,
+        feature=feature, profile=profile, x=np.asarray(x, dtype=np.float64), edges=pos * px,
     )

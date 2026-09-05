@@ -145,6 +145,74 @@ RESIST_LIBRARY: dict[str, dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+#: Bumped when a saved configuration's meaning changes. Written into every
+#: JSON file so a reader can tell which rules the numbers were written under.
+CONFIG_SCHEMA_VERSION = 1
+
+IMAGING_MODELS = ("scalar", "vector")
+POLARISATIONS = ("unpolarised", "x", "y", "te", "tm")
+NORMALISATIONS = ("peak", "clear", "none")
+MASK_MODELS = ("thin", "multilayer", "fdtd")
+TONES = ("positive", "negative")
+FOCUS_REFERENCES = ("top", "mid", "bottom")
+OPTICAL_MODELS = ("twobeam", "tmm")
+
+
+def _choice(owner: str, name: str, value: Any, choices: tuple[str, ...]) -> None:
+    if value not in choices:
+        raise ValueError(
+            f"{owner}.{name} must be one of {list(choices)}, got {value!r}"
+        )
+
+
+def _bounded(
+    owner: str,
+    name: str,
+    value: Any,
+    lo: float | None = None,
+    hi: float | None = None,
+    *,
+    lo_open: bool = False,
+    hi_open: bool = False,
+) -> None:
+    """Raise unless ``lo <= value <= hi`` (bounds open where asked, or absent)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise TypeError(f"{owner}.{name} must be a number, got {value!r}") from None
+    if v != v:  # NaN
+        raise ValueError(f"{owner}.{name} must not be NaN")
+    if lo is not None and (v < lo or (lo_open and v == lo)):
+        raise ValueError(
+            f"{owner}.{name} must be {'>' if lo_open else '>='} {lo:g}, got {value!r}"
+        )
+    if hi is not None and (v > hi or (hi_open and v == hi)):
+        raise ValueError(
+            f"{owner}.{name} must be {'<' if hi_open else '<='} {hi:g}, got {value!r}"
+        )
+
+
+def _known_fields(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys *cls* does not declare, warning once about what was dropped.
+
+    A configuration written by a newer build may carry fields this one does
+    not know; refusing to load it would make every saved file a liability.
+    Unknown keys are reported and ignored, and the schema version says which
+    rules the rest was written under.
+    """
+    names = {f.name for f in fields(cls)}
+    unknown = sorted(k for k in data if k not in names)
+    if unknown:
+        logger.warning(
+            "%s: ignoring unknown field(s) %s", cls.__name__, ", ".join(unknown)
+        )
+    return {k: v for k, v in data.items() if k in names}
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
@@ -318,6 +386,51 @@ class OpticsConfig:
     mask_stack: dict[str, Any] | None = None
     mask_geometry: dict[str, Any] | None = None
     m3d_angles: int = 3
+
+    def __post_init__(self) -> None:
+        """Reject values the physics cannot take, at construction.
+
+        Every check here is a physical bound, not a taste: an NA above the
+        immersion index means ``sin θ > 1``, a coherence factor above 1 puts
+        source points outside the pupil where the renderer silently clips
+        them, and a misspelt model name would otherwise surface as a
+        ``ValueError`` several calls deep, or not at all. ``dataclasses.replace``
+        re-runs this, so a derived config is checked too.
+        """
+        o = "OpticsConfig"
+        _bounded(o, "wavelength", self.wavelength, 0.0, lo_open=True)
+        _bounded(o, "NA", self.NA, 0.0, lo_open=True)
+        _bounded(o, "n_immersion", self.n_immersion, 0.0, lo_open=True)
+        if self.n_image is not None:
+            _bounded(o, "n_image", self.n_image, 0.0, lo_open=True)
+        if self.NA > self.image_index:
+            raise ValueError(
+                f"{o}: NA {self.NA:g} exceeds the image-space index "
+                f"{self.image_index:g}, which would make sin θ > 1. Raise "
+                f"n_immersion (or n_image) or lower NA."
+            )
+        _bounded(o, "defocus", self.defocus)
+        _bounded(o, "sigma_outer", self.sigma_outer, 0.0, 1.0, lo_open=True)
+        _bounded(o, "sigma_inner", self.sigma_inner, 0.0, self.sigma_outer)
+        _bounded(o, "source_grid", self.source_grid, 3)
+        if self.source_spec is None:
+            from litho_sim.expose.illumination import SOURCE_TYPES
+
+            _choice(o, "source_type", self.source_type, SOURCE_TYPES)
+        _choice(o, "imaging_model", self.imaging_model, IMAGING_MODELS)
+        _choice(o, "polarisation", self.polarisation, POLARISATIONS)
+        _choice(o, "normalisation", self.normalisation, NORMALISATIONS)
+        _choice(o, "mask_model", self.mask_model, MASK_MODELS)
+        _choice(o, "chief_ray_axis", self.chief_ray_axis, ("x", "y"))
+        _bounded(o, "reduction", self.reduction, 0.0, lo_open=True)
+        _bounded(o, "chief_ray_deg", self.chief_ray_deg, -90.0, 90.0)
+        _bounded(o, "m3d_angles", self.m3d_angles, 1)
+        for j, c in (self.zernike_coeffs or {}).items():
+            if not isinstance(j, int) or isinstance(j, bool) or j < 1:
+                raise ValueError(
+                    f"{o}.zernike_coeffs keys are Noll indices (int ≥ 1), got {j!r}"
+                )
+            _bounded(o, f"zernike_coeffs[{j}]", c)
 
     @property
     def mask_side_NA(self) -> float:
@@ -516,6 +629,46 @@ class ResistConfig:
     optical_model: str = "twobeam"
     film_stack: list[dict[str, Any]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        """Reject values the chemistry cannot take, at construction.
+
+        Zero is allowed wherever it has a meaning — a zero-thickness film, a
+        zero develop time and a zero diffusion length are all legitimate
+        degenerate cases the tests lean on — and refused where it does not
+        (a zero nominal dose, a zero maximum rate). The Mack exponent must be
+        at least 2 because the rate law divides by ``n − 1``.
+        """
+        r = "ResistConfig"
+        _choice(r, "tone", self.tone, TONES)
+        _bounded(r, "threshold", self.threshold, 0.0, 1.0, lo_open=True, hi_open=True)
+        for name in ("dill_A", "dill_B", "dill_C"):
+            _bounded(r, name, getattr(self, name), 0.0)
+        _bounded(r, "mack_Rmax", self.mack_Rmax, 0.0, lo_open=True)
+        _bounded(r, "mack_Rmin", self.mack_Rmin, 0.0, self.mack_Rmax)
+        _bounded(r, "mack_Mth", self.mack_Mth, 0.0, 1.0, lo_open=True, hi_open=True)
+        _bounded(r, "mack_n", self.mack_n, 2)
+        _bounded(r, "inhibition_depth", self.inhibition_depth, 0.0)
+        _bounded(r, "inhibition_rate", self.inhibition_rate, 0.0, 1.0, lo_open=True)
+        for name in ("diffusion_sigma", "stochastic_sigma", "quencher_ratio",
+                     "bake_time", "D_acid", "D_quencher", "k_quench", "k_amp",
+                     "k_loss", "electron_blur_sigma", "thickness", "develop_time"):
+            _bounded(r, name, getattr(self, name), 0.0)
+        _bounded(r, "stochastic_corr_length", self.stochastic_corr_length, 0.0,
+                 lo_open=True)
+        _bounded(r, "pag_density", self.pag_density, 0.0, lo_open=True)
+        _bounded(r, "dose_nominal", self.dose_nominal, 0.0, lo_open=True)
+        _bounded(r, "n_resist", self.n_resist, 0.0, lo_open=True)
+        _bounded(r, "substrate_reflectance", self.substrate_reflectance, 0.0, 1.0)
+        _choice(r, "focus_reference", self.focus_reference, FOCUS_REFERENCES)
+        _choice(r, "optical_model", self.optical_model, OPTICAL_MODELS)
+        for i, layer in enumerate(self.film_stack):
+            if not isinstance(layer, dict) or "thickness" not in layer:
+                raise ValueError(
+                    f"{r}.film_stack[{i}] must be a dict with a 'thickness' key, "
+                    f"got {layer!r}"
+                )
+            _bounded(r, f"film_stack[{i}].thickness", layer["thickness"], 0.0)
+
 
 @dataclass
 class GridConfig:
@@ -542,6 +695,16 @@ class GridConfig:
     pixel_size: float = 4e-9
     dz: float = 2e-9
     n_z_slices: int = 21
+
+    def __post_init__(self) -> None:
+        g = "GridConfig"
+        if isinstance(self.n_pixels, bool) or int(self.n_pixels) != self.n_pixels:
+            raise TypeError(f"{g}.n_pixels must be an integer, got {self.n_pixels!r}")
+        _bounded(g, "n_pixels", self.n_pixels, 1)
+        _bounded(g, "pixel_size", self.pixel_size, 0.0, lo_open=True)
+        # dz = 0 is tolerated: purely 2-D work never reads it.
+        _bounded(g, "dz", self.dz, 0.0)
+        _bounded(g, "n_z_slices", self.n_z_slices, 1)
 
     @property
     def grid_size(self) -> float:
@@ -576,8 +739,14 @@ class SimulationConfig:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a plain, JSON-compatible dictionary."""
-        return asdict(self)
+        """Serialise to a plain, JSON-compatible dictionary.
+
+        Carries ``schema_version`` so a file can say which rules it was
+        written under; :meth:`from_dict` ignores keys it does not know.
+        """
+        d = asdict(self)
+        d["schema_version"] = CONFIG_SCHEMA_VERSION
+        return d
 
     def to_json(self, path: Path) -> None:
         """Write configuration to a JSON file.
@@ -599,16 +768,27 @@ class SimulationConfig:
 
         JSON stores integer keys as strings; ``zernike_coeffs`` are
         automatically converted back to ``{int: float}``.
+
+        Fields this build does not know are dropped with a warning rather
+        than refused, so a file from a newer build still loads; a
+        ``schema_version`` newer than :data:`CONFIG_SCHEMA_VERSION` is
+        logged, since the values may then mean something else.
         """
-        optics_data = dict(data.get("optics", {}))
+        version = data.get("schema_version")
+        if version is not None and int(version) > CONFIG_SCHEMA_VERSION:
+            logger.warning(
+                "configuration schema version %s is newer than this build's %s",
+                version, CONFIG_SCHEMA_VERSION,
+            )
+        optics_data = _known_fields(OpticsConfig, dict(data.get("optics", {})))
         if "zernike_coeffs" in optics_data:
             optics_data["zernike_coeffs"] = {
                 int(k): float(v)
                 for k, v in optics_data["zernike_coeffs"].items()
             }
         optics = OpticsConfig(**optics_data)
-        resist = ResistConfig(**data.get("resist", {}))
-        grid = GridConfig(**data.get("grid", {}))
+        resist = ResistConfig(**_known_fields(ResistConfig, dict(data.get("resist", {}))))
+        grid = GridConfig(**_known_fields(GridConfig, dict(data.get("grid", {}))))
         return cls(
             optics=optics,
             resist=resist,

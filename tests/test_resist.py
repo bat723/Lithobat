@@ -9,13 +9,8 @@ private helpers that existed nowhere in the tree, so *every* call raised
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.bake.peb import apply_peb
 from litho_sim.core.config import GridConfig, SimulationConfig

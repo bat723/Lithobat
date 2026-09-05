@@ -18,13 +18,8 @@ Stage 1 (this file, for now) covers the geometry foundation:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig, OpticsConfig
 from litho_sim.expose.aerial_image import compute_aerial_image

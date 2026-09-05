@@ -11,6 +11,7 @@ from litho_sim.app.params import (
 from litho_sim.app.qt import QtCore, QtGui, QtWidgets
 from litho_sim.app.solid_view import INSTALL_HINT, SolidView
 from litho_sim.app.views import StackView
+from litho_sim.patterning.steps import ProcessStep
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class StackTab(QtWidgets.QWidget):
         # when the run lands. `_pending_flow` is the one queued re-run.
         self._busy_flow = False
         self._pending_flow = False
-        self._deferred: dict[int, object] = {}
+        self._deferred: dict[int, ProcessStep] = {}
         #: Mesh stride for the 3-D view. 4 is right for a flow being built —
         #: the wafer is redrawn on every edit — and wrong for a finished device
         #: loaded to be looked at, which `load_stack` drops to 1.

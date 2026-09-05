@@ -14,16 +14,10 @@ manufacturability statement, which is the only thing these flows are for.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
-from litho_sim.wafer import Stack  # noqa: E402
+from litho_sim.wafer import Stack
 
 SI, OX, NIT, POLY = 1, 2, 3, 4
 
@@ -31,7 +25,7 @@ SI, OX, NIT, POLY = 1, 2, 3, 4
 @pytest.mark.slow
 def test_two_printed_masks_build_a_planar_nfet(monkeypatch):
     """The whole flow, with an etch spy checking no mask array ever enters."""
-    import demo_nfet
+    from litho_sim.tech import nfet as demo_nfet
 
     etch_masks = []
     real_etch = Stack.etch
@@ -79,7 +73,7 @@ def test_the_spacer_separates_the_gate_from_the_source_drain():
     `gate_shorts` alone would not, because the gate oxide underneath is
     intact either way.
     """
-    import demo_nfet
+    from litho_sim.tech import nfet as demo_nfet
 
     s, _ = demo_nfet.build_nfet(verbose=False)
     n = s.shape_xy[1]
@@ -110,7 +104,7 @@ def test_the_spacer_separates_the_gate_from_the_source_drain():
 @pytest.mark.slow
 def test_the_flow_scales_with_gate_length():
     """Same recipe at two gate lengths: parametric, not hand-fitted."""
-    import demo_nfet
+    from litho_sim.tech import nfet as demo_nfet
 
     for gate_nm in (72.0, 132.0):
         s, m = demo_nfet.build_nfet(gate_nm=gate_nm, verbose=False)

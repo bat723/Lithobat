@@ -11,13 +11,9 @@ dose, ~14x fewer photons, visibly noisier acid, from constants alone.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import RESIST_LIBRARY, ResistConfig
 from litho_sim.expose.photochem import (

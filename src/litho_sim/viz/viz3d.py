@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -66,7 +67,7 @@ def _require_plotly() -> None:
 
 def surface_payload(
     stack: Stack, ref: str | int | Material
-) -> dict[str, NDArray] | None:
+) -> dict[str, Any] | None:
     """Reduce one material to the arrays a surface renderer needs.
 
     Parameters
@@ -890,8 +891,8 @@ def _draw_frame(ax, x1: float, y1: float, z1: float, style: str,
     """
     if style == "none":
         return
-    seg = []
-    floor = [((0, 0, 0), (x1, 0, 0)), ((x1, 0, 0), (x1, y1, 0)),
+    seg: list = []
+    floor: list = [((0, 0, 0), (x1, 0, 0)), ((x1, 0, 0), (x1, y1, 0)),
              ((x1, y1, 0), (0, y1, 0)), ((0, y1, 0), (0, 0, 0))]
     if style == "corner":
         # Floor, plus the two verticals on the far corner only.
@@ -1216,7 +1217,7 @@ def resist_surface_mpl(
             ax.plot_surface(WX, WY, wall, color=_darken(c_sub, 0.85),
                             shade=False, linewidth=0)
 
-    kw = {}
+    kw: dict[str, Any] = {}
     if cmap is not None:
         kw["cmap"] = cmap
     else:

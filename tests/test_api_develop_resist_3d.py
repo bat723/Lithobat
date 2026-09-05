@@ -24,13 +24,9 @@ not duplicated here.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import litho_sim.develop as develop_pkg
 from litho_sim.bake import apply_peb_3d
@@ -50,7 +46,6 @@ from litho_sim.develop import (
 )
 from litho_sim.mask.patterns import lines_and_spaces
 from litho_sim.wafer import VACUUM, Stack, get_material
-
 
 # ---------------------------------------------------------------------------
 # Small, fast configuration: 64 px laterally, 25 voxels of depth.
@@ -256,10 +251,9 @@ def test_vertical_interference_dispatches_tmm(optics, grid, resist):
     )
 
 
-def test_vertical_interference_rejects_unknown_model(optics, grid, resist):
-    bad = dataclasses.replace(resist, optical_model="crystal-ball")
-    with pytest.raises(ValueError, match="optical model"):
-        apply_vertical_interference(np.ones((10, 4, 4)), bad, optics, grid)
+def test_vertical_interference_rejects_unknown_model(resist):
+    with pytest.raises(ValueError, match="optical_model"):
+        dataclasses.replace(resist, optical_model="crystal-ball")
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 from pathlib import Path
@@ -82,8 +83,7 @@ def main() -> None:
     logger.info("Generating %d clean images…", args.n_clean)
     for i in tqdm(range(args.n_clean), desc="Clean"):
         # Small random focus / dose jitter
-        import copy
-        local_optics = copy.replace(
+        local_optics = dataclasses.replace(
             cfg.optics,
             defocus=float(rng.uniform(-20e-9, 20e-9)),
         )

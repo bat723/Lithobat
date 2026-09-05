@@ -30,3 +30,20 @@ def _isolated_m3d_cache(tmp_path, monkeypatch):
     provider.clear_library_cache()
     yield
     provider.clear_library_cache()
+
+
+@pytest.fixture(autouse=True)
+def _close_figures():
+    """Close every pyplot figure a test left open.
+
+    The figure-returning functions go through pyplot so that a CLI run can
+    still ``plt.show()`` them, which means each one stays registered until
+    closed. Left alone, a plotting test file crosses matplotlib's 20-figure
+    warning threshold and the suite ends with a memory warning.
+    """
+    yield
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:  # pragma: no cover - matplotlib is a core dependency
+        return
+    plt.close("all")

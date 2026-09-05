@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -72,6 +73,13 @@ class JsonFileMixin:
     adds only the path handling, so every serialisable object — a layout, a
     flow, a source — reads and writes its files the same way.
     """
+
+    def to_dict(self) -> dict[str, Any]:  # pragma: no cover - the class supplies it
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]):  # pragma: no cover - the class supplies it
+        raise NotImplementedError
 
     def to_json(self, path: str | Path) -> None:
         path = Path(path)

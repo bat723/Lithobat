@@ -21,13 +21,9 @@ test_stepspecs) do not:
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
 from litho_sim.mask.layout import Layout, line_array

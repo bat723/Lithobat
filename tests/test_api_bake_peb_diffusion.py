@@ -19,13 +19,8 @@ noise) already live in ``tests/test_resist.py`` and are not repeated here.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import litho_sim.bake as bake_pkg
 from litho_sim.bake import apply_peb, apply_peb_3d
@@ -239,13 +234,14 @@ def test_apply_peb_3d_rejects_bad_inputs():
     with pytest.raises(ValueError, match="3-D"):
         # must raise even on the zero-sigma path, not silently no-op
         apply_peb_3d(pac2d, ResistConfig(diffusion_sigma=0.0), grid)
-    with pytest.raises(ValueError, match="diffusion lengths"):
-        apply_peb_3d(vol, ResistConfig(diffusion_sigma=-1e-9), grid)
+    # A negative lateral length never reaches the bake: the config refuses it.
+    with pytest.raises(ValueError, match="diffusion_sigma"):
+        ResistConfig(diffusion_sigma=-1e-9)
     with pytest.raises(ValueError, match="diffusion lengths"):
         apply_peb_3d(vol, ResistConfig(diffusion_sigma=20e-9), grid, sigma_z=-1e-9)
+    # dz = 0 is a legal grid (2-D work never reads it) that the 3-D bake must refuse.
     with pytest.raises(ValueError, match="spacings"):
         apply_peb_3d(vol, ResistConfig(diffusion_sigma=20e-9),
                      GridConfig(n_pixels=16, pixel_size=4e-9, dz=0.0))
-    with pytest.raises(ValueError, match="spacings"):
-        apply_peb_3d(vol, ResistConfig(diffusion_sigma=20e-9),
-                     GridConfig(n_pixels=16, pixel_size=0.0, dz=2e-9))
+    with pytest.raises(ValueError, match="pixel_size"):
+        GridConfig(n_pixels=16, pixel_size=0.0, dz=2e-9)

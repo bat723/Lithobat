@@ -11,13 +11,9 @@ into the app. Headless throughout; no widget is constructed here.
 from __future__ import annotations
 
 import copy
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.app.compute import build_mask, compute_imaging
 from litho_sim.app.fem import FemRequest, compute_fem

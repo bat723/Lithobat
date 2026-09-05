@@ -203,7 +203,7 @@ def shape_from_dict(d: dict[str, Any]) -> Shape:
 
 def _axis_coords(grid: GridConfig) -> NDArray[np.float64]:
     """Pixel-centre coordinates in metres, centred on the field."""
-    return (np.arange(grid.n_pixels) - grid.n_pixels // 2) * grid.pixel_size
+    return ((np.arange(grid.n_pixels) - grid.n_pixels // 2) * grid.pixel_size).astype(np.float64)
 
 
 def rasterize_shapes(

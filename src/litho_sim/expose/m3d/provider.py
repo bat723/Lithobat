@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
+from litho_sim.core.config import MASK_MODELS as _MASK_MODELS
 from litho_sim.core.config import GridConfig, OpticsConfig
 from litho_sim.expose.aerial_image import SOURCE_TILT_SIGN
 from litho_sim.expose.m3d.stack import MaskStack
@@ -53,7 +54,7 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime only
 logger = logging.getLogger(__name__)
 
 #: Mask models, cheapest first.  See the package docstring for what each buys.
-MASK_MODELS: tuple[str, ...] = ("thin", "multilayer", "fdtd")
+MASK_MODELS: tuple[str, ...] = _MASK_MODELS
 
 #: Angular range and sampling of the blank-reflection table, in degrees.  25°
 #: covers every order a 4x reticle can emit into a 0.33 NA pupil at a 6° chief
@@ -148,6 +149,18 @@ class SpectrumProvider(Protocol):
         """
         ...
 
+    def spectrum_for(self, fs_x: float, fs_y: float) -> NDArray[np.complex128]:
+        """The spectrum under illumination from source point ``(fs_x, fs_y)``.
+
+        The per-source-point call; for an angle-independent model it may
+        simply return :meth:`base_spectrum`.
+        """
+        ...
+
+    def clear_intensity(self, fs_x: float, fs_y: float) -> float:
+        """What an unpatterned mask returns for this source point — 1 for a thin mask."""
+        ...
+
 
 class ThinMaskSpectra:
     """The Kirchhoff screen: one spectrum, shared by every source point.
@@ -165,6 +178,9 @@ class ThinMaskSpectra:
         self._spectrum = np.fft.fft2(mask.astype(np.complex128))
 
     def base_spectrum(self) -> NDArray[np.complex128]:
+        return self._spectrum
+
+    def spectrum_for(self, fs_x: float, fs_y: float) -> NDArray[np.complex128]:
         return self._spectrum
 
     def clear_intensity(self, fs_x: float, fs_y: float) -> float:

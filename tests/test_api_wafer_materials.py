@@ -16,17 +16,13 @@ from __future__ import annotations
 
 import dataclasses
 import re
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 import litho_sim.wafer as wafer
 from litho_sim.core.config import GridConfig
-from litho_sim.wafer import MATERIAL_LIBRARY, VACUUM, Material, Stack, get_material
+from litho_sim.wafer import MATERIAL_LIBRARY, VACUUM, Stack, get_material
 
 # ---------------------------------------------------------------------------
 # The public surface

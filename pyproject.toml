@@ -17,13 +17,13 @@ dependencies = [
     "scipy>=1.10",
     "pandas>=2.0",
     "matplotlib>=3.7",
+    "contourpy>=1.0",     # printed-edge contours in the OPC model
     "tqdm>=4.65",
 ]
 
 [project.optional-dependencies]
 viz = [
-    "plotly>=6.0",        # static 3-D stack figure for the Streamlit pages
-    "streamlit>=1.33",    # the older browser app
+    "plotly>=6.0",        # the static 3-D stack figure (viz3d.stack_figure)
     "scikit-image>=0.21", # optional: marching-cubes meshes for freestanding spacers
 ]
 viz3d = [
@@ -92,4 +92,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
+# The bodies of unannotated functions are not checked; saying so on every
+# one of them is noise.
+disable_error_code = ["annotation-unchecked"]
 

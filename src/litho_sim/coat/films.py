@@ -167,7 +167,7 @@ class FilmStack:
 
     def _cos_thetas(self, theta0: float) -> NDArray:
         """Propagation cosines in every layer, from Snell's law."""
-        n = _propagation_index([f.n for f in self.films])
+        n = _propagation_index(np.asarray([f.n for f in self.films]))
         sin0 = n[0] * np.sin(theta0)
         return np.sqrt(1.0 - (sin0 / n) ** 2)
 
@@ -180,7 +180,7 @@ class FilmStack:
         start: int, end: int, cos_theta: NDArray,
     ) -> NDArray:
         """Characteristic matrix for layers ``start..end`` (exclusive of end)."""
-        n = _propagation_index([f.n for f in self.films])
+        n = _propagation_index(np.asarray([f.n for f in self.films]))
         M = np.eye(2, dtype=complex)
         for j in range(start, end):
             d = self.films[j].thickness
@@ -199,7 +199,7 @@ class FilmStack:
         """Amplitude reflection seen looking *down* from the top of *layer*."""
         _check_wavelength(wavelength)
         cos_theta = self._cos_thetas(theta0)
-        n = _propagation_index([f.n for f in self.films])
+        n = _propagation_index(np.asarray([f.n for f in self.films]))
         eta = np.array(
             [_tilted_admittance(n[j], cos_theta[j], polarisation)
              for j in range(len(self.films))]

@@ -13,13 +13,9 @@ one, because cancellation depends on the coating's thickness and absorption.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.coat.films import (
     Film,
@@ -305,10 +301,9 @@ def test_dispatch_defaults_to_the_legacy_model(grid, optics):
     )
 
 
-def test_dispatch_rejects_unknown_model(grid, optics):
-    resist = ResistConfig(optical_model="ray-tracing")
-    with pytest.raises(ValueError, match="Unknown optical model"):
-        apply_vertical_interference(np.ones((4, 4, 4)), resist, optics, grid)
+def test_dispatch_rejects_unknown_model():
+    with pytest.raises(ValueError, match="optical_model must be"):
+        ResistConfig(optical_model="ray-tracing")
 
 
 def test_optical_model_defaults_are_off():

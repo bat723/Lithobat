@@ -17,13 +17,9 @@ CD lands near the designed line.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig, SimulationConfig
 from litho_sim.develop import (
@@ -189,7 +185,6 @@ def test_unknown_model_raises_through_the_package(aerial, cfg):
         simulate_resist(aerial, cfg.resist, cfg.grid, model="dissolve")
 
 
-def test_bad_tone_is_rejected(aerial, cfg):
-    bad = dataclasses.replace(cfg.resist, tone="sideways")
+def test_bad_tone_is_rejected(cfg):
     with pytest.raises(ValueError, match="tone"):
-        simulate_resist(aerial, bad, cfg.grid, model="threshold")
+        dataclasses.replace(cfg.resist, tone="sideways")

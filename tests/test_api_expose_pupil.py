@@ -15,13 +15,9 @@ from __future__ import annotations
 # Ensure src/ is on the path when running tests directly
 import logging
 import math
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core import GridConfig, OpticsConfig
 from litho_sim.expose import compute_aerial_image, pupil_grid, zernike_noll

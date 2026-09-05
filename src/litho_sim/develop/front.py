@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -174,14 +175,14 @@ def _sweep(
     order = range(n) if direction > 0 else range(n - 1, -1, -1)
 
     for i in order:
-        here = [slice(None)] * T.ndim
-        here[axis] = i
-        here = tuple(here)
+        here_l: list[Any] = [slice(None)] * T.ndim
+        here_l[axis] = i
+        here = tuple(here_l)
 
         along = []
         for j in (i - 1, i + 1):
             if 0 <= j < n:
-                s_ = list(here)
+                s_: list[Any] = list(here)
                 s_[axis] = j
                 along.append(T[tuple(s_)])
         a_axis = (
@@ -196,7 +197,7 @@ def _sweep(
             in_slab = a - (1 if a > axis else 0)
             lo = np.roll(slab, 1, axis=in_slab)
             hi = np.roll(slab, -1, axis=in_slab)
-            edge = [slice(None)] * slab.ndim
+            edge: list[Any] = [slice(None)] * slab.ndim
             edge[in_slab] = 0
             lo[tuple(edge)] = _UNREACHED
             edge[in_slab] = -1

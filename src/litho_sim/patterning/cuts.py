@@ -164,7 +164,7 @@ def add_cut_mask(
         raise ValueError(f"style must be 'litho' or 'ideal', got '{style}'")
     flow.layouts["cut"] = cut_layout
     # Insert before the final Measure so the measurement sees the cut result.
-    tail = []
+    tail: list = []
     while flow.steps and isinstance(flow.steps[-1], Measure):
         tail.insert(0, flow.steps.pop())
     if style == "litho":

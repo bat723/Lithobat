@@ -143,9 +143,9 @@ class SolidView(QtWidgets.QWidget):
         super().__init__(parent)
         self._plotter = None
         self._actors: dict[int, Any] = {}
-        self._frame = None
-        self._bar = None
-        self._bar_label = None
+        self._frame: Any = None
+        self._bar: Any = None
+        self._bar_label: Any = None
         self._extent: tuple[float, float] | None = None
         self._zex = 1.0
         self._drawn = False
@@ -196,13 +196,13 @@ class SolidView(QtWidgets.QWidget):
                 scene, off_screen=off_screen, multi_samples=multi_samples,
                 auto_update=False, lighting="light kit",
             )
-            self._plotter.set_background(theme.SURFACE)
-            self._plotter.enable_parallel_projection()
+            self._plotter.set_background(theme.SURFACE)  # type: ignore[arg-type]
+            self._plotter.enable_parallel_projection()  # type: ignore[call-arg]
             if self._plotter.iren is not None:
                 try:
                     # pyvista binds 'q' to closing the plotter, which in a
                     # docked widget means a blank panel with no way back.
-                    self._plotter.clear_events_for_key("q")
+                    self._plotter.clear_events_for_key("q")  # type: ignore[arg-type]
                 except Exception:                     # noqa: BLE001
                     logger.debug("could not unbind 'q'", exc_info=True)
             self._plotter.setSizePolicy(
@@ -273,7 +273,7 @@ class SolidView(QtWidgets.QWidget):
         span = max(b[1] - b[0], b[3] - b[2], b[5] - b[4], 1.0)
         p.camera_position = [tuple(centre + 3.0 * span * direction), tuple(centre),
                              (0.0, 0.0, 1.0)]
-        p.reset_camera(render=False)
+        p.reset_camera(render=False)  # type: ignore[call-arg]
         p.camera.zoom(_ZOOM)
         # Fitting used the viewport's aspect. Hidden, the viewport is not
         # the size it will be shown at, so the fit is repeated on show.

@@ -1,7 +1,8 @@
 """Render the finished devices in 3-D — the final product, nothing else.
 
 Builds both device flows and draws each one as a solid: the planar bulk nFET
-from ``demo_nfet.py`` and the gate-all-around nanosheet from ``demo_gaa.py``.
+from ``litho_sim.tech.nfet`` and the gate-all-around nanosheet from
+``litho_sim.tech.gaa``.
 No per-step panels, no cross-sections — just what the wafer ends up holding.
 
 Both are sectioned with :func:`~litho_sim.viz.viz3d.crop`, which cuts the voxel
@@ -20,7 +21,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from litho_sim.tech.devices import sectioned
 from litho_sim.viz.viz3d import device_figure_mpl
@@ -94,10 +94,10 @@ def main() -> None:
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
 
-    from demo_gaa import build_gaa
-    from demo_gaa import checks as gaa_checks
-    from demo_nfet import build_nfet
-    from demo_nfet import checks as nfet_checks
+    from litho_sim.tech.gaa import build_gaa
+    from litho_sim.tech.gaa import checks as gaa_checks
+    from litho_sim.tech.nfet import build_nfet
+    from litho_sim.tech.nfet import checks as nfet_checks
 
     print("building planar nFET ...")
     nfet, nm = build_nfet(verbose=False)

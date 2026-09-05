@@ -10,14 +10,10 @@ offscreen Qt where it cannot.
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.app.compute import film_preview, mask_preview, source_preview
 from litho_sim.app.params import (

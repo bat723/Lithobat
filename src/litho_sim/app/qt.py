@@ -23,7 +23,12 @@ try:
     # the backend imports the binding too — and would raise matplotlib's own
     # unhelpful error first, having already mutated the global backend on a
     # machine that cannot use it.
-    from matplotlib.backends.qt_compat import QT_API, QtCore, QtGui, QtWidgets
+    from matplotlib.backends.qt_compat import (  # type: ignore[attr-defined]
+    QT_API,
+    QtCore,
+    QtGui,
+    QtWidgets,
+)
 except ImportError as exc:  # pragma: no cover - depends on the environment
     raise ImportError(
         "The desktop app needs a Qt binding, and none is installed.\n"

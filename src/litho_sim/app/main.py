@@ -39,6 +39,7 @@ from pathlib import Path
 from litho_sim.app.compute import (
     FILM_PREVIEW_KEYS,
     ImagingResult,
+    Profile3DResult,
     film_preview,
     mask_preview,
     source_preview,
@@ -173,7 +174,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._print_params: ParameterModel | None = None
         self._inflight_print: ParameterModel | None = None
         self._busy_print = False
-        self._profile: object | None = None
+        self._profile: Profile3DResult | None = None
         self._profile_params: ParameterModel | None = None
         self._inflight_profile: ParameterModel | None = None
         self._busy_3d = False

@@ -9,13 +9,8 @@ entire basis of SADP/SAQP.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core.config import GridConfig
 from litho_sim.wafer import MATERIAL_LIBRARY, VACUUM, Stack, get_material

@@ -15,13 +15,9 @@ than merely plausible:
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.bake.peb import apply_peb_3d
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
@@ -93,10 +89,9 @@ def test_effective_defocus_scales_with_resist_index(optics, resist):
     assert d == pytest.approx(expected)
 
 
-def test_effective_defocus_rejects_bad_reference(optics, resist):
-    bad = dataclasses.replace(resist, focus_reference="middle-ish")
+def test_effective_defocus_rejects_bad_reference(resist):
     with pytest.raises(ValueError, match="focus_reference"):
-        effective_defocus(0.0, optics, bad)
+        dataclasses.replace(resist, focus_reference="middle-ish")
 
 
 # ---------------------------------------------------------------------------

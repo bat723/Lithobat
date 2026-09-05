@@ -714,7 +714,7 @@ class Stack:
         # profile starts where its material does rather than at the highest
         # point on the wafer.
         depth_below = (surf[None] - zz) * self.dz
-        offset = profile.offsets(depth_below, reached)
+        offset = profile.offsets(np.asarray(depth_below, dtype=np.float64), reached)
 
         shaped = (
             (signed[None] <= offset)
@@ -966,14 +966,14 @@ class Stack:
         # (128x128x140: 6840 ms whole array, 4192 ms padded by the reach,
         # 663 ms like this).
         pad = 2
-        box = []
+        box_l: list[slice] = []
         for axis in range(3):
             hit = np.where(reachable.any(
                 axis=tuple(a for a in range(3) if a != axis)))[0]
             lo = max(0, int(hit[0]) - pad)
             hi = min(self.mat.shape[axis], int(hit[-1]) + 1 + pad)
-            box.append(slice(lo, hi))
-        box = tuple(box)
+            box_l.append(slice(lo, hi))
+        box = tuple(box_l)
 
         arrival = arrival_time(attack[self.mat[box]], spacing=spacing,
                                seed=seed[box])
@@ -1197,7 +1197,8 @@ class Stack:
         pitch walking, so *spaces* is usually the interesting list.
         """
         prof = self.line_profile(ref, z_frac)
-        runs, out = [], {"lines": [], "spaces": []}
+        runs: list = []
+        out: dict[str, list] = {"lines": [], "spaces": []}
         if prof.size == 0:
             return out
 
@@ -1241,7 +1242,10 @@ class Stack:
         }
         meta["fields"] = {k: str(v.dtype) for k, v in self.fields.items()}
         extra = {f"field_{k}": v for k, v in self.fields.items()}
-        np.savez_compressed(path, mat=self.mat, meta=json.dumps(meta), **extra)
+        # **extra holds arrays, never allow_pickle; the stub cannot tell.
+        np.savez_compressed(
+            path, mat=self.mat, meta=json.dumps(meta), **extra  # type: ignore[arg-type]
+        )
         logger.info("Stack saved → %s (%.1f KB)", path, path.stat().st_size / 1e3)
 
     @classmethod

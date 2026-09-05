@@ -68,6 +68,23 @@ def _synthetic_print(n: int = 128, pitch_nm: float = 200.0, px_nm: float = 4.0):
     return grid, aerial, resist
 
 
+def _small_opc():
+    """A real OPC run, small: two lines and a line end on a 128 px grid, 3 iterations."""
+    from litho_sim.core.config import SimulationConfig
+    from litho_sim.mask import Layout, Rect, line_array
+    from litho_sim.opc import PrintModel, run_opc
+
+    cfg = SimulationConfig.from_tech_node("ArF")
+    grid = GridConfig(n_pixels=128, pixel_size=5e-9)
+    model = PrintModel(cfg.optics, cfg.resist, grid, tone="dark")
+    model.dose = model.dose_to_size(
+        Layout(line_array(3, pitch=200e-9, cd=100e-9, length=560e-9)), 100.0
+    )
+    design = Layout(line_array(2, pitch=200e-9, cd=100e-9, length=400e-9, centre=(-100e-9, 0))
+                    + [Rect("main", 180e-9, 0, 100e-9, 400e-9)])
+    return run_opc(design, model, max_iter=3)
+
+
 def build(out: Path) -> Path:
     import matplotlib.pyplot as plt
 
@@ -75,8 +92,8 @@ def build(out: Path) -> Path:
     df, pw, el_dof = _synthetic_sweep()
     grid, aerial, resist = _synthetic_print()
 
-    fig = plt.figure(figsize=(16, 13), constrained_layout=True)
-    gs = fig.add_gridspec(3, 3)
+    fig = plt.figure(figsize=(16, 17), constrained_layout=True)
+    gs = fig.add_gridspec(4, 3)
 
     plots.plot_aerial_image(aerial, grid, ax=fig.add_subplot(gs[0, 0]))
     plots.plot_resist_profile(aerial, resist, grid, threshold=0.45,
@@ -102,7 +119,12 @@ def build(out: Path) -> Path:
     ax.set_axis_off()
     theme.title(ax, "Material palette", caption_text=f"{len(mats)} materials")
 
-    theme.caption(fig, "style board — synthetic data, every viz.plots figure on one page")
+    # The OPC triptych — the one figure that needs real physics behind it.
+    plots.plot_opc(_small_opc(), axes=[fig.add_subplot(gs[3, i]) for i in range(3)])
+
+    theme.caption(
+        fig, "style board — synthetic data (OPC row real), every viz.plots figure on one page"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=110)
     return out

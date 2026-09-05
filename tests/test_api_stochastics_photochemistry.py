@@ -11,13 +11,8 @@ covered in ``test_photochem.py``; this file is about the interface.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import litho_sim.expose
 from litho_sim.core.config import ResistConfig

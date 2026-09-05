@@ -16,9 +16,9 @@ to convenient display units (nm, %) for DataFrames and return values.
 Two conventions worth knowing before reading numbers out of this module:
 
 * **Dose is baked into the aerial image.** Every measurement here goes
-  through :func:`_measure_point`, which never forwards dose to the resist
-  chemistry — passing it twice would square it (the double-count hazard
-  documented at :func:`litho_sim.develop.resist.simulate_resist`).
+  through :func:`_measure_point`, and the resist chain takes no dose of its
+  own — :func:`litho_sim.develop.resist.develop_field` applies only the
+  nominal dose that converts intensity to real units.
 * **Sweeps default to clear-field normalisation.** The peak intensity is
   focus-dependent, so under peak normalisation "dose 1.0" delivers a
   different physical energy at every defocus and Bossung curves flatten
@@ -36,14 +36,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from litho_sim.bake.peb import apply_peb
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig, SimulationConfig
-from litho_sim.develop.resist import (
-    dill_exposure,
-    mack_development_rate,
-    measure_cd_1d,
-    measure_cd_2d,
-)
+from litho_sim.develop.resist import develop_field, measure_cd_1d, measure_cd_2d
 from litho_sim.expose.aerial_image import compute_aerial_image, normalisation_scale
 from litho_sim.mask.patterns import apply_bias, lines_and_spaces
 
@@ -130,89 +124,48 @@ def _measure_point(
     resist_cfg: ResistConfig,
     grid: GridConfig,
     model: str = "threshold",
+    *,
+    feature: str | None = None,
+    axis: int = 1,
 ) -> float:
     """Printed CD [m] from an aerial image — the single measurement kernel.
 
     Every CD this module reports (Bossung sweeps, dose-to-size, MEEF) comes
     through here, so the measurement conventions live in one place:
 
-    * **Dose rule**: any dose is already baked into *aerial* and is never
-      forwarded to the resist chemistry — the Dill exposure would multiply
-      it in again (the double-count hazard documented at
-      :func:`litho_sim.develop.resist.simulate_resist`).
+    * **Dose rule**: any dose is already baked into *aerial*; the resist
+      chain has no dose argument to forward it to, so it cannot be applied
+      twice.
     * **Sub-pixel**: the *continuous* field is measured with interpolated
       threshold crossings rather than binarised first. Binarising quantises
       CD to whole pixels (4 nm at the default grid — the audit's H5
       finding), which is too coarse to resolve a Bossung curve.
-    * **threshold model**: measures the PEB-diffused latent image at the
-      develop threshold — the diffused-aerial-image treatment, matching the
-      desktop app's live path. At ``diffusion_sigma = 0`` the blur is a
-      no-op and this reduces to thresholding the aerial directly.
-    * **mack model**: runs Dill → PEB → Mack rate and measures the develop
-      depth field against the film thickness — where the front fails to
-      reach the substrate, resist survives.
-    * **car model**: runs acid generation → acid/quencher reaction–diffusion
-      → Mack rate on the *protected* fraction, measured the same way. Note
-      the bake makes the dose axis genuinely non-linear (that is the
-      quencher's whole point), and each grid point pays for a PDE bake —
-      a car sweep costs seconds per point, not milliseconds.
+    * **One field per model**: the field and the level it is measured at
+      come from :func:`litho_sim.develop.resist.develop_field` — the
+      PEB-diffused aerial image at the develop threshold for ``threshold``,
+      the develop-depth field against the film thickness for ``mack`` and
+      ``car``. OPC measures its edge placement errors on the same field, so
+      the two can never disagree about what printed.
+
+    Parameters
+    ----------
+    feature : str, optional
+        Which side of the level to measure: ``"below"`` (the dark region of
+        the image) or ``"above"`` (the bright region). Defaults to the
+        *resist line* — below for a positive tone, above for a negative —
+        which is the CD a Bossung curve is drawn for.
+    axis : int
+        ``1`` measures along the centre row (a vertical feature, varying in
+        x); ``0`` along the centre column.
     """
-    mid = aerial.shape[0] // 2
-    if model == "threshold":
-        latent = apply_peb(aerial, resist_cfg.diffusion_sigma, grid.pixel_size)
-        cut = latent[mid, :]
+    field, level = develop_field(aerial, resist_cfg, grid, model=model)
+    if feature is None:
         # Positive tone: resist survives where intensity stays *under* the
         # threshold — the printed line is the dark region of the image.
         feature = "below" if resist_cfg.tone == "positive" else "above"
-        return measure_cd_1d(
-            cut, grid.pixel_size, threshold=resist_cfg.threshold, feature=feature
-        )
-    if model == "mack":
-        pac = dill_exposure(aerial, resist_cfg.dose_nominal, resist_cfg.dill_C)
-        pac_peb = apply_peb(pac, resist_cfg.diffusion_sigma, grid.pixel_size)
-        rate = mack_development_rate(
-            pac_peb, resist_cfg.mack_Rmax, resist_cfg.mack_Rmin,
-            resist_cfg.mack_Mth, resist_cfg.mack_n,
-        )
-        cleared_nm = rate * resist_cfg.develop_time
-        cut = cleared_nm[mid, :]
-        thickness_nm = resist_cfg.thickness * 1e9
-        feature = "below" if resist_cfg.tone == "positive" else "above"
-        return measure_cd_1d(
-            cut, grid.pixel_size, threshold=thickness_nm, feature=feature
-        )
-    if model == "car":
-        from litho_sim.bake.reaction import bake_reaction_diffusion
-        from litho_sim.expose.photochem import generate_acid
-
-        # The bake diffuses in 2-D, so the whole field is baked and the cut
-        # taken afterwards — cutting first would turn lateral diffusion off.
-        acid = generate_acid(aerial, resist_cfg, grid.pixel_size, dose=1.0)
-        baked = bake_reaction_diffusion(
-            acid,
-            grid.pixel_size,
-            resist_cfg.bake_time,
-            resist_cfg.D_acid,
-            quencher=resist_cfg.quencher_ratio,
-            D_quencher=resist_cfg.D_quencher,
-            k_quench=resist_cfg.k_quench,
-            k_loss=resist_cfg.k_loss,
-            k_amp=resist_cfg.k_amp,
-        )
-        rate = mack_development_rate(
-            baked["protected"], resist_cfg.mack_Rmax, resist_cfg.mack_Rmin,
-            resist_cfg.mack_Mth, resist_cfg.mack_n,
-        )
-        cleared_nm = rate * resist_cfg.develop_time
-        cut = cleared_nm[mid, :]
-        thickness_nm = resist_cfg.thickness * 1e9
-        feature = "below" if resist_cfg.tone == "positive" else "above"
-        return measure_cd_1d(
-            cut, grid.pixel_size, threshold=thickness_nm, feature=feature
-        )
-    raise ValueError(
-        f"Unknown resist model: '{model}'. Choose 'threshold', 'mack' or 'car'."
-    )
+    mid = aerial.shape[1 - axis] // 2
+    cut = field[mid, :] if axis == 1 else field[:, mid]
+    return measure_cd_1d(cut, grid.pixel_size, threshold=level, feature=feature)
 
 
 def evaluate_cd(
@@ -745,6 +698,8 @@ def calibrate_dose_to_size(
     dose_bounds: tuple[float, float] = (0.25, 4.0),
     tol_nm: float = 0.05,
     max_iter: int = 40,
+    feature: str | None = None,
+    axis: int = 1,
 ) -> float:
     """Find the dose that prints *target_cd_nm* at the given focus.
 
@@ -770,6 +725,11 @@ def calibrate_dose_to_size(
         Convergence tolerance on |CD − target| [nm].
     max_iter : int
         Bisection iteration cap.
+    feature, axis
+        Which feature to size and along which axis, forwarded to the
+        measurement kernel. The default sizes the resist line on the centre
+        row; ``feature="above"`` sizes the bright region instead — the drawn
+        feature of a clear-tone mask.
 
     Returns
     -------
@@ -783,7 +743,8 @@ def calibrate_dose_to_size(
 
     def cd_error(dose: float) -> float:
         aerial = raw * normalisation_scale(local.normalisation, peak, clear, dose)
-        return _measure_point(aerial, resist, grid, model=model) - target_m
+        cd = _measure_point(aerial, resist, grid, model=model, feature=feature, axis=axis)
+        return cd - target_m
 
     # CD is not monotone across the full bracket: an underexposed image has
     # no edges at all (CD 0) and an overexposed one clears completely
@@ -904,7 +865,7 @@ def compute_el_dof_curve(
     for i0 in range(n_focus):
         for i1 in range(i0, n_focus):
             holds = ok[:, i0:i1 + 1].all(axis=1)
-            runs = _contiguous_runs(holds)
+            runs = _contiguous_runs(np.asarray(holds, dtype=bool))
             if not runs:
                 continue
             r0, r1 = max(runs, key=lambda r: doses[r[1]] - doses[r[0]])

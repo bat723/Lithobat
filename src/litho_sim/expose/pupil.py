@@ -22,6 +22,8 @@ import math
 import numpy as np
 from numpy.typing import NDArray
 
+from litho_sim.core.config import POLARISATIONS as _POLARISATIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -224,7 +226,7 @@ def defocus_opd(
 # ---------------------------------------------------------------------------
 
 #: Illumination polarisation states understood by the vector imaging path.
-POLARISATIONS = ("unpolarised", "x", "y", "te", "tm")
+POLARISATIONS = _POLARISATIONS
 
 
 def jones_states(polarisation: str, phi_source: float) -> list:

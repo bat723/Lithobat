@@ -432,6 +432,128 @@ def plot_cd_heatmap(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# OPC
+# ---------------------------------------------------------------------------
+
+
+def _outline(ax, layout, color, lw, label=None, layer=None):
+    """Draw every shape of a layout as a closed outline, in nanometres."""
+    shapes = layout.shapes if layer is None else layout.on_layer(layer)
+    first = True
+    for sh in shapes:
+        p = np.asarray(sh.polygon()) * 1e9
+        p = np.vstack([p, p[:1]])
+        ax.plot(p[:, 0], p[:, 1], color=color, lw=lw, label=label if first else None,
+                solid_joinstyle="miter")
+        first = False
+
+
+def _contours(ax, printed, color, lw, label=None):
+    first = True
+    for line in printed.contours():
+        line = line * 1e9
+        ax.plot(line[:, 0], line[:, 1], color=color, lw=lw, label=label if first else None)
+        first = False
+
+
+def plot_opc(result, axes=None, clip_nm: tuple[float, float, float, float] | None = None):
+    """The three pictures an OPC run is judged by.
+
+    Left: the drawn design over the corrected mask, so the jogs, serifs and
+    hammerheads the loop grew are visible against what was asked for.
+    Middle: the design with what it printed before correction and after.
+    Right: the edge placement error at every fragment, before and after,
+    sorted — the distribution the loop shrank, with the tolerance drawn in.
+
+    Parameters
+    ----------
+    result : litho_sim.opc.OPCResult
+        A finished run.
+    axes : sequence of three Axes, optional
+        Existing axes to draw into; a new figure otherwise.
+    clip_nm : (x0, x1, y0, y1), optional
+        Axis limits for the two layout panels [nm]; defaults to the
+        design's bounds with a margin.
+
+    Returns
+    -------
+    fig, axes : Figure, tuple of Axes
+    """
+    if axes is None:
+        apply_style()
+        fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.6), constrained_layout=True)
+    else:
+        fig = axes[0].figure
+    ax_mask, ax_print, ax_epe = axes
+
+    design, corrected = result.design, result.corrected
+    if clip_nm is None:
+        b = np.array([sh.bounds() for sh in design.shapes]) * 1e9
+        x0, y0 = b[:, 0].min(), b[:, 1].min()
+        x1, y1 = b[:, 2].max(), b[:, 3].max()
+        m = 0.08 * max(x1 - x0, y1 - y0)
+        clip_nm = (x0 - m, x1 + m, y0 - m, y1 + m)
+
+    # --- the mask ---------------------------------------------------------
+    layer = result.settings.get("layer")
+    _outline(ax_mask, design, SERIES.reference, 0.9, "design", layer=layer)
+    if "sraf" in corrected.layers():
+        _outline(ax_mask, corrected, MUTED, 0.9, "assist features", layer="sraf")
+    _outline(ax_mask, corrected, SERIES.warn, 1.0, "corrected mask", layer=layer)
+    ax_mask.set_aspect("equal")
+    ax_mask.set_xlim(clip_nm[0], clip_nm[1])
+    ax_mask.set_ylim(clip_nm[2], clip_nm[3])
+    ax_mask.set_xlabel("x [nm]")
+    ax_mask.set_ylabel("y [nm]")
+    offs = np.abs(result.offsets) * 1e9
+    theme.legend(ax_mask, where="top", ncol=2)
+    theme.title(
+        ax_mask, "Corrected mask",
+        caption_text=f"{len(offs)} fragments · largest move {offs.max():.1f} nm",
+    )
+
+    # --- what printed -----------------------------------------------------
+    _outline(ax_print, design, SERIES.reference, 0.9, "design", layer=layer)
+    _contours(ax_print, result.before, SERIES.warn, 1.0, "printed, uncorrected")
+    _contours(ax_print, result.after, SERIES.resist, 1.3, "printed, corrected")
+    ax_print.set_aspect("equal")
+    ax_print.set_xlim(clip_nm[0], clip_nm[1])
+    ax_print.set_ylim(clip_nm[2], clip_nm[3])
+    ax_print.set_xlabel("x [nm]")
+    ax_print.set_ylabel("y [nm]")
+    theme.legend(ax_print, where="top", ncol=1)
+    s = result.settings
+    theme.title(
+        ax_print, "Printed contour",
+        caption_text=f"dose {s.get('dose', float('nan')):.3f} · {s.get('model', '')} resist · "
+                     f"{len(result.history) - 1} iterations"
+                     + ("" if result.converged else " (not converged)"),
+    )
+
+    # --- the EPE distribution ---------------------------------------------
+    eb = np.abs(result.epe_before.values) * 1e9
+    ea = np.abs(result.epe_after.values) * 1e9
+    eb = np.sort(eb[np.isfinite(eb)])
+    ea = np.sort(ea[np.isfinite(ea)])
+    ax_epe.plot(np.arange(len(eb)), eb, color=SERIES.warn, lw=1.2, label="before")
+    ax_epe.plot(np.arange(len(ea)), ea, color=SERIES.resist, lw=1.4, label="after")
+    theme.rule(ax_epe, y=s.get("tol", 1e-9) * 1e9, text="tolerance", color=SERIES.threshold)
+    ax_epe.set_xlabel("fragment, sorted by |EPE|")
+    ax_epe.set_ylabel("|EPE| [nm]")
+    ax_epe.set_ylim(bottom=0)
+    theme.grid(ax_epe)
+    theme.legend(ax_epe, where="top")
+    sb, sa = result.epe_before.stats(), result.epe_after.stats()
+    theme.title(
+        ax_epe, "Edge placement error",
+        caption_text=f"max {sb['max_abs_epe_nm']:.1f} to {sa['max_abs_epe_nm']:.1f} nm · "
+                     f"rms {sb['rms_epe_nm']:.1f} to {sa['rms_epe_nm']:.1f} nm · "
+                     f"edges not found {sb['n_failed']} to {sa['n_failed']}",
+    )
+    return fig, tuple(axes)
+
+
 def save_figure(
     fig: Figure,
     path: str | Path,

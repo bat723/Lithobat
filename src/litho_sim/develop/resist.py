@@ -36,6 +36,7 @@ import logging
 import numpy as np
 from numpy.typing import NDArray
 
+from litho_sim.bake.peb import apply_peb
 from litho_sim.core.config import GridConfig, ResistConfig
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,12 @@ def dill_exposure(
 # ---------------------------------------------------------------------------
 # Step 2 – Post-Exposure Bake
 # ---------------------------------------------------------------------------
-
-
-# apply_peb moved to litho_sim.bake.peb — the bake step owns diffusion now.
-# Imported here only for simulate_resist's internal use.
-from litho_sim.bake.peb import apply_peb  # noqa: E402
-
+#
+# Diffusion belongs to the bake step: :func:`litho_sim.bake.peb.apply_peb`
+# (Gaussian) and :func:`litho_sim.bake.reaction.bake_reaction_diffusion`
+# (acid/quencher reaction–diffusion). :func:`_bake` below is the one place
+# this module runs exposure and bake together.
+#
 # ---------------------------------------------------------------------------
 # Step 3 – Development
 # ---------------------------------------------------------------------------
@@ -187,7 +188,6 @@ def surface_inhibition(
 def remaining_thickness(
     latent: NDArray[np.float64],
     cfg: ResistConfig,
-    dose: float = 1.0,
 ) -> NDArray[np.float64]:
     """How much resist is left at every point, in nanometres.
 
@@ -212,16 +212,15 @@ def remaining_thickness(
         Aerial or post-bake latent image, ``(ny, nx)``.
     cfg : ResistConfig
         Supplies the Mack rate parameters, ``develop_time`` and ``thickness``.
-    dose : float
-        Extra Dill exposure multiplier. Leave at 1.0 when *latent* already
-        carries the dose, which is the normal case.
+        The relative dose is already in *latent*; the Dill exposure here
+        applies only the nominal dose that turns it into real units.
 
     Returns
     -------
     NDArray[np.float64]
         Remaining thickness [nm], clipped to ``[0, thickness]``.
     """
-    pac = dill_exposure(latent, dose * cfg.dose_nominal, cfg.dill_C)
+    pac = dill_exposure(latent, cfg.dose_nominal, cfg.dill_C)
     rate = mack_development_rate(
         pac, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
     )
@@ -280,6 +279,52 @@ def threshold_development(
 # ---------------------------------------------------------------------------
 
 
+def _bake(
+    aerial: NDArray[np.float64],
+    cfg: ResistConfig,
+    grid: GridConfig,
+    model: str,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Exposure and bake for the chemistry models — the one copy of the chain.
+
+    Returns ``(after_exposure, after_bake)``, both scaled so that 1 means
+    "unexposed": PAC after Dill exposure and after the Gaussian bake for
+    ``"mack"``; unconverted PAG and the protected fraction after the
+    reaction–diffusion bake for ``"car"``. :func:`simulate_resist` binarises
+    the second field, :func:`develop_field` turns it into a develop depth;
+    neither re-derives the chemistry, so the two cannot drift apart.
+
+    The relative dose is already in *aerial* (it is applied by
+    :func:`~litho_sim.expose.aerial_image.compute_aerial_image`); only the
+    nominal dose that converts it to real units is applied here.
+    """
+    if model == "mack":
+        pac = dill_exposure(aerial, cfg.dose_nominal, cfg.dill_C)
+        return pac, apply_peb(pac, cfg.diffusion_sigma, grid.pixel_size)
+    if model == "car":
+        from litho_sim.bake.reaction import bake_reaction_diffusion
+        from litho_sim.expose.photochem import generate_acid
+
+        # The bake diffuses in 2-D, so the whole field is baked and any cut
+        # taken afterwards — cutting first would turn lateral diffusion off.
+        acid = generate_acid(aerial, cfg, grid.pixel_size, dose=1.0)
+        baked = bake_reaction_diffusion(
+            acid,
+            grid.pixel_size,
+            cfg.bake_time,
+            cfg.D_acid,
+            quencher=cfg.quencher_ratio,
+            D_quencher=cfg.D_quencher,
+            k_quench=cfg.k_quench,
+            k_loss=cfg.k_loss,
+            k_amp=cfg.k_amp,
+        )
+        return 1.0 - acid, baked["protected"]
+    raise ValueError(
+        f"Unknown resist model: '{model}'. Choose 'threshold', 'mack' or 'car'."
+    )
+
+
 def _mack_binary(
     latent: NDArray[np.float64], cfg: ResistConfig
 ) -> NDArray[np.float64]:
@@ -290,6 +335,13 @@ def _mack_binary(
     CAR bake. Both develop by the same rule: the developer clears
     ``rate × develop_time`` of depth, and resist survives where that fails
     to reach the substrate.
+
+    Negative tone is the positive result inverted. That is the same
+    convention :func:`develop_field` exposes (its field always rises with
+    exposure and the caller picks the side), and it is an approximation: a
+    real negative-tone rate law is on the roadmap, and
+    :func:`remaining_thickness` — the app's continuous profile — already
+    evaluates the rate on the exposed fraction instead.
     """
     rate = mack_development_rate(
         latent, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n
@@ -304,16 +356,16 @@ def simulate_resist(
     cfg: ResistConfig,
     grid: GridConfig,
     model: str = "threshold",
-    dose: float = 1.0,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """Run the full resist pipeline: exposure → PEB → development → LER.
 
     Parameters
     ----------
     aerial : NDArray
-        Aerial image intensity, shape ``(ny, nx)``.  Any relative dose applied
-        by :func:`~litho_sim.expose.aerial_image.compute_aerial_image` is already
-        baked in here.
+        Aerial image intensity, shape ``(ny, nx)``.  The relative dose applied
+        by :func:`~litho_sim.expose.aerial_image.compute_aerial_image` is
+        already in it, and nothing here applies one again — the chemistry
+        only converts it to real units with ``cfg.dose_nominal``.
     cfg : ResistConfig
         Resist chemistry and process parameters.
     grid : GridConfig
@@ -331,10 +383,6 @@ def simulate_resist(
         this differ from ``"mack"``: sub-threshold acid is annihilated
         rather than blurred, so dose response is asymmetric and contrast
         comes from chemistry rather than the Mack exponent alone.
-    dose : float
-        *Additional* Dill exposure multiplier, applied only on the ``"mack"``
-        path.  Leave at 1.0 when *aerial* already carries the dose, which is
-        the normal case — passing it in both places double-counts.
 
     Returns
     -------
@@ -356,34 +404,9 @@ def simulate_resist(
         # are bypassed. pac_exp/pac_peb echo the aerial image for API symmetry.
         resist = threshold_development(aerial, cfg.threshold, cfg.tone)
         pac_exp = pac_peb = aerial.copy()
-    elif model == "mack":
-        pac_exp = dill_exposure(aerial, dose * cfg.dose_nominal, cfg.dill_C)
-        pac_peb = apply_peb(pac_exp, cfg.diffusion_sigma, grid.pixel_size)
-        resist = _mack_binary(pac_peb, cfg)
-    elif model == "car":
-        from litho_sim.bake.reaction import bake_reaction_diffusion
-        from litho_sim.expose.photochem import generate_acid
-
-        acid = generate_acid(aerial, cfg, grid.pixel_size, dose=dose)
-        # Unconverted PAG: the CAR analogue of PAC, 1 = unexposed.
-        pac_exp = 1.0 - acid
-        baked = bake_reaction_diffusion(
-            acid,
-            grid.pixel_size,
-            cfg.bake_time,
-            cfg.D_acid,
-            quencher=cfg.quencher_ratio,
-            D_quencher=cfg.D_quencher,
-            k_quench=cfg.k_quench,
-            k_loss=cfg.k_loss,
-            k_amp=cfg.k_amp,
-        )
-        pac_peb = baked["protected"]
-        resist = _mack_binary(pac_peb, cfg)
     else:
-        raise ValueError(
-            f"Unknown resist model: '{model}'. Choose 'threshold', 'mack' or 'car'."
-        )
+        pac_exp, pac_peb = _bake(aerial, cfg, grid, model)
+        resist = _mack_binary(pac_peb, cfg)
 
     if cfg.use_stochastic:
         from litho_sim.develop.stochastic import add_edge_roughness
@@ -400,6 +423,63 @@ def simulate_resist(
         model, cfg.tone, 100.0 * float(resist.mean()),
     )
     return pac_exp, pac_peb, resist
+
+
+def develop_field(
+    aerial: NDArray[np.float64],
+    cfg: ResistConfig,
+    grid: GridConfig,
+    model: str = "threshold",
+) -> tuple[NDArray[np.float64], float]:
+    """The continuous field the printed edge is a level set of, and its level.
+
+    Every model in this engine ends the same way: some scalar field crosses
+    some threshold, and the crossing is the resist edge. This returns that
+    ``(field, threshold)`` pair without binarising, so a caller can locate
+    the edge *between* pixels — the sub-pixel measurement that
+    :func:`litho_sim.analysis.process_window._measure_point` needs for a
+    Bossung curve and that OPC needs for an edge placement error. Both go
+    through here so there is exactly one definition of "what printed".
+
+    The field always increases with exposure: the bright side of a mask
+    edge is the side where ``field > threshold``, whatever the model.
+
+    Parameters
+    ----------
+    aerial : NDArray
+        Aerial image, ``(ny, nx)``, dose already applied.
+    cfg : ResistConfig
+        Resist chemistry and process parameters.
+    grid : GridConfig
+        Supplies ``pixel_size`` for the bake kernels.
+    model : str
+        ``"threshold"`` — the PEB-diffused aerial image against
+        ``cfg.threshold``.  At ``diffusion_sigma = 0`` this is the aerial
+        image itself.
+        ``"mack"`` — Dill exposure → PEB → Mack rate; the field is the depth
+        the developer clears [nm] against the film thickness.
+        ``"car"`` — acid generation → reaction–diffusion bake → Mack rate on
+        the protected fraction; same depth field, same threshold.
+
+    Returns
+    -------
+    (field, threshold) : tuple
+        The field, same shape as *aerial*, and the level the resist edge
+        sits at, in the field's own units.
+
+    Raises
+    ------
+    ValueError
+        For an unrecognised *model*.
+    """
+    if model == "threshold":
+        return apply_peb(aerial, cfg.diffusion_sigma, grid.pixel_size), float(cfg.threshold)
+
+    _, latent = _bake(aerial, cfg, grid, model)
+    rate = mack_development_rate(latent, cfg.mack_Rmax, cfg.mack_Rmin, cfg.mack_Mth, cfg.mack_n)
+    return rate * cfg.develop_time, float(cfg.thickness * 1e9)
+
+
 # ---------------------------------------------------------------------------
 # CD measurement helpers
 # ---------------------------------------------------------------------------

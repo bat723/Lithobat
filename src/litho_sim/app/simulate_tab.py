@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -165,7 +166,7 @@ class PrintPage(_RunPage):
         extent = (0.0, w * px, 0.0, h * px)
         resist = theme.material_colour("photoresist")
         resist_cmap, resist_norm = theme.binary_cmap(resist)
-        panels = (
+        panels: tuple[tuple[Any, ...], ...] = (
             (r.mask, CMAP.micrograph, "Mask", None,
              {"vmin": 0.0, "vmax": 1.0}),
             (r.aerial, CMAP.intensity, "Aerial image", f"NILS {r.nils:.2f}",

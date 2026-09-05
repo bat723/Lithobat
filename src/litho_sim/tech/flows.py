@@ -1,11 +1,11 @@
 """Shared machinery for printed-device process flows.
 
-The device flows themselves (``scripts/demo_gaa.py``, ``scripts/demo_nfet.py``)
-stay in ``scripts/`` as runnable, documented narratives. What they share — the
-litho level applied as real process steps, the narration and recording hooks,
-the dose-calibration sweep, and the morphology their structural checks lean on
-— lives here, so each flow script reads as *its recipe* rather than as a copy
-of the other's plumbing.
+The device flows themselves (:mod:`litho_sim.tech.gaa`,
+:mod:`litho_sim.tech.nfet`) are runnable, documented narratives. What they
+share — the litho level applied as real process steps, the narration and
+recording hooks, the dose-calibration sweep, and the morphology their
+structural checks lean on — lives here, so each flow reads as *its recipe*
+rather than as a copy of the other's plumbing.
 """
 
 from __future__ import annotations

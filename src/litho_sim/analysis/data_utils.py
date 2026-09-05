@@ -8,6 +8,7 @@ The tidy format used throughout analysis: columns ``dose``, ``defocus_nm``,
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def validate_dataframe(
     df: pd.DataFrame,
-    required_cols: list[str] = ("dose", "defocus_nm", "cd_nm"),
+    required_cols: Sequence[str] = ("dose", "defocus_nm", "cd_nm"),
 ) -> None:
     """Raise :class:`ValueError` if *df* is missing required columns.
 

@@ -16,15 +16,10 @@ check — it would just no longer be a manufacturability statement.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
-from litho_sim.wafer import Stack  # noqa: E402
+from litho_sim.wafer import Stack
 
 
 @pytest.mark.slow
@@ -36,7 +31,7 @@ def test_two_printed_masks_build_a_wrapped_transistor(monkeypatch):
     only together do they say "this design can be printed and processed into
     a GAA transistor".
     """
-    import demo_gaa
+    from litho_sim.tech import gaa as demo_gaa
 
     etch_masks = []
     real_etch = Stack.etch
@@ -95,7 +90,7 @@ def test_the_flow_scales_with_sheet_count():
     channel, not an error. Both now scale with the stack, and this is the test
     that keeps them scaling.
     """
-    import demo_gaa
+    from litho_sim.tech import gaa as demo_gaa
 
     for sheets in (2, 4):
         s, _ = demo_gaa.build_gaa(sheets=sheets, verbose=False)
@@ -118,13 +113,13 @@ def test_the_recorded_recipe_is_the_recipe_that_built_the_device():
     So: replay the recorded steps onto a bare wafer through the ordinary
     engine, and require the same wafer out. Byte-identical, not approximately.
     """
-    import demo_gaa
     import numpy as np
 
     from litho_sim.core.config import OpticsConfig, ResistConfig
     from litho_sim.mask.geometry import Rect
     from litho_sim.mask.layout import Layout
     from litho_sim.patterning.flow import Flow
+    from litho_sim.tech import gaa as demo_gaa
 
     recorded = []
     base = []

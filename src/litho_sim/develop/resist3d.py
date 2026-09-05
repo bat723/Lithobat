@@ -53,7 +53,7 @@ from litho_sim.bake.peb import apply_peb_3d
 from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
 from litho_sim.develop.front import develop_front
 from litho_sim.develop.resist import mack_development_rate, surface_inhibition
-from litho_sim.expose.aerial_image import compute_aerial_image
+from litho_sim.expose.aerial_image import compute_aerial_planes
 from litho_sim.wafer import VACUUM, get_material
 
 logger = logging.getLogger(__name__)
@@ -147,8 +147,6 @@ def exposure_volume(
     depths = np.linspace(0.0, resist.thickness, n_slices)
     planes = np.empty((n_slices, grid.n_pixels, grid.n_pixels), dtype=np.float64)
 
-    import dataclasses
-
     # The image forms *inside* the resist, so that is the index the imaging
     # geometry must use — it is what sets the ray angle, sin θ = NA/n_resist
     # rather than NA/n_immersion, and therefore the whole size of the vector
@@ -162,13 +160,14 @@ def exposure_volume(
     # applied twice and every out-of-focus plane would be wrong.
     index_ratio = resist.n_resist / optics.n_immersion
 
-    for i, d in enumerate(depths):
-        local = dataclasses.replace(
-            optics,
-            defocus=effective_defocus(float(d), optics, resist) * index_ratio,
-            n_image=resist.n_resist,
-        )
-        planes[i] = compute_aerial_image(mask, local, grid, dose=dose)
+    # One pass through the source for every plane: the mask spectrum and each
+    # source point's pupil geometry are shared, only the defocus phase differs.
+    planes[:] = compute_aerial_planes(
+        mask, optics, grid,
+        [(effective_defocus(float(d), optics, resist) * index_ratio, resist.n_resist)
+         for d in depths],
+        dose=dose,
+    )
 
     # Interpolate onto the voxel grid, then flip to bottom-up (Stack order).
     z_vox_depth = (np.arange(nz) + 0.5) * grid.dz  # depth below top
@@ -185,7 +184,7 @@ def exposure_volume(
         "I ∈ [%.3f, %.3f]",
         nz, n_slices, float(intensity.min()), float(intensity.max()),
     )
-    return intensity, z
+    return np.asarray(intensity, dtype=np.float64), np.asarray(z, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +396,8 @@ def tmm_standing_waves(
     for r, w in zip(rho[src > 0].ravel(), src[src > 0].ravel()):
         sin_theta = np.clip(r * optics.NA / optics.n_immersion, 0.0, 0.999)
         envelope += w * stack.field_profile(
-            optics.wavelength, z, theta0=float(np.arcsin(sin_theta))
+            optics.wavelength, np.asarray(z, dtype=np.float64),
+            theta0=float(np.arcsin(sin_theta))
         )
         total_w += w
     if total_w > 0:

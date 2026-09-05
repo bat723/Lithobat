@@ -1,21 +1,25 @@
 """Named device presets — build one, or load it from the cache.
 
-The two device flows live in ``scripts/`` (``demo_gaa.py``, ``demo_nfet.py``)
-because each is a runnable, documented artefact in its own right. This module
-is the thin adapter that lets the rest of the package ask for one *by name* —
-so the app's File ▸ Load device menu, ``scripts/show_device.py`` and anything
-later all go through one definition of "the GAA preset" rather than three.
+The two device flows are :mod:`litho_sim.tech.gaa` and
+:mod:`litho_sim.tech.nfet`, each a runnable, documented artefact in its own
+right (``litho-sim device gaa``). This module is the thin adapter that lets
+the rest of the package ask for one *by name* — so the app's File ▸ Load
+device menu, ``scripts/show_device.py`` and anything later all go through one
+definition of "the GAA preset" rather than three.
 
-Building a device costs 2–7 s, so the result is cached to ``presets/`` as a
-compressed ``.npz``. The cache is keyed on the preset name; delete the file to
-force a rebuild after changing a flow.
+Building a device costs 2–7 s, so the result is cached as a compressed
+``.npz`` — under ``presets/`` in a repository checkout, otherwise under
+``~/.cache/litho_sim/presets`` (override with ``LITHO_SIM_PRESETS``). The
+cache is keyed on the preset name; delete the file to force a rebuild after
+changing a flow.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
-import sys
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -32,10 +36,26 @@ logger = logging.getLogger(__name__)
 #: version is treated as absent so the device rebuilds with its context.
 FLOW_CACHE_VERSION = 2
 
-#: Repo root, from ``src/litho_sim/tech/devices.py``.
-_ROOT = Path(__file__).resolve().parents[3]
-SCRIPTS_DIR = _ROOT / "scripts"
-PRESET_DIR = _ROOT / "presets"
+
+
+def _default_preset_dir() -> Path:
+    """Where device caches go.
+
+    ``presets/`` beside ``pyproject.toml`` when running from a checkout — the
+    directory is gitignored and a rebuild is cheap. An installed wheel has no
+    checkout, so it uses a per-user cache directory instead of writing into
+    ``site-packages``.
+    """
+    override = os.environ.get("LITHO_SIM_PRESETS")
+    if override:
+        return Path(override)
+    root = Path(__file__).resolve().parents[3]
+    if (root / "pyproject.toml").is_file():
+        return root / "presets"
+    return Path.home() / ".cache" / "litho_sim" / "presets"
+
+
+PRESET_DIR = _default_preset_dir()
 
 
 class DeviceSpec:
@@ -53,12 +73,12 @@ class DeviceSpec:
 
 DEVICES: dict[str, DeviceSpec] = {
     "gaa": DeviceSpec(
-        "gaa", "GAA nanosheet", "demo_gaa", "build_gaa",
+        "gaa", "GAA nanosheet", "litho_sim.tech.gaa", "build_gaa",
         dict(y=(0.45, 1.0), x=(0.15, 0.85), z_substrate=6e-9),
         "Gate-all-around nanosheet FET — EUV, two printed masks",
     ),
     "nfet": DeviceSpec(
-        "nfet", "Planar nFET", "demo_nfet", "build_nfet",
+        "nfet", "Planar nFET", "litho_sim.tech.nfet", "build_nfet",
         dict(y=(0.42, 1.0), z_substrate=10e-9),
         "Planar bulk nFET — 193 nm immersion, two printed masks",
     ),
@@ -166,8 +186,10 @@ def _save_flow(path: Path, flow: DeviceFlow) -> None:
     }
     arrays = {f"mat_{i:03d}": s.mat for i, s in enumerate(flow.snapshots)}
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, meta=json.dumps(meta), mat_base=flow.base.mat,
-                        **arrays)
+    # **arrays holds arrays, never allow_pickle; the stub cannot tell.
+    np.savez_compressed(
+        path, meta=json.dumps(meta), mat_base=flow.base.mat, **arrays  # type: ignore[arg-type]
+    )
     logger.info("device flow saved → %s (%.1f KB, %d steps)",
                 path, path.stat().st_size / 1e3, len(flow))
 
@@ -223,20 +245,12 @@ def flow_for(name: str, preset_dir: Path | None = None) -> DeviceFlow | None:
 
 
 def _load_builder(spec: DeviceSpec) -> Callable:
-    """Import the flow module out of ``scripts/``.
+    """Import the flow's builder — a plain module import, resolved on demand.
 
-    Not importable as a package — it is a directory of runnable scripts — so
-    the path goes on ``sys.path`` once, the same way ``show_device.py`` does it.
+    Deferred rather than imported at module scope so that listing the presets
+    (the app's menu) does not pull in the flows and their matplotlib imports.
     """
-    if not SCRIPTS_DIR.is_dir():
-        raise FileNotFoundError(
-            f"device flows live in {SCRIPTS_DIR}, which is not there. The "
-            f"presets need the repository checkout, not just the installed "
-            f"package."
-        )
-    if str(SCRIPTS_DIR) not in sys.path:
-        sys.path.insert(0, str(SCRIPTS_DIR))
-    module = __import__(spec.module)
+    module = importlib.import_module(spec.module)
     return getattr(module, spec.builder)
 
 

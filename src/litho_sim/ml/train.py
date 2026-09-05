@@ -150,9 +150,9 @@ def train(
 
     criterion = nn.MSELoss()
     optimizer = Adam(model.parameters(), lr=lr)
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode="min", patience=5, factor=0.5, verbose=False
-    )
+    # No ``verbose`` — torch removed the argument in 2.x, and this crashed
+    # on any current install until mypy flagged it.
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=5, factor=0.5)
 
     history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
     best_val_loss = float("inf")

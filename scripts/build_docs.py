@@ -55,8 +55,9 @@ BANNER = (
 #: Modules inside an area are auto-discovered with pkgutil, so a new module
 #: gets a page without touching this file; only its concept links are curated.
 AREAS: dict[str, str | None] = {
-    "core": None,
+    "core": "Core",
     "mask": "Patterning",
+    "opc": "OPC",
     "expose": "Exposure",
     "coat": "Coating",
     "bake": "Bake",
@@ -68,6 +69,7 @@ AREAS: dict[str, str | None] = {
     "viz": "Visualisation",
     "ml": None,
     "tech": "Patterning",
+    "cli": None,
 }
 
 #: "area/module" → the concept notes it implements, so the graph connects
@@ -77,10 +79,16 @@ MODULE_CONCEPTS: dict[str, list[str]] = {
     "mask/geometry": ["Layout Decomposition", "Overlay and Pitch Walking"],
     "mask/layout": ["Layout Decomposition"],
     "mask/patterns": ["Layout Decomposition"],
+    "opc/fragments": ["Model-Based OPC"],
+    "opc/model": ["Model-Based OPC", "Process Window"],
+    "opc/correct": ["Model-Based OPC"],
+    "opc/assist": ["Assist Features", "Model-Based OPC"],
     "expose/pupil": ["Aerial Image Formation"],
     "expose/illumination": ["Partial Coherence", "Illumination Sources", "Source Sampling"],
     "expose/source": ["Illumination Sources", "Source Sampling"],
     "expose/aerial_image": ["Aerial Image Formation", "Source Sampling", "Defocus and Depth"],
+    "expose/hopkins": ["Sum of Coherent Systems", "Aerial Image Formation", "Model-Based OPC"],
+    "core/config": ["Config Validation", "Engine"],
     "coat/films": ["Thin-Film Interference", "Standing Waves"],
     "bake/peb": ["Standing Waves", "Development Models"],
     "develop/resist": ["Dill Exposure Model", "Development Models"],
@@ -102,6 +110,13 @@ MODULE_CONCEPTS: dict[str, list[str]] = {
     "expose/m3d.provider": ["Mask 3-D Effects"],
     "expose/m3d.yee": ["FDTD Near-Field Solver"],
     "tech/devices": ["Printing a GAA Transistor", "Printing a Planar nFET"],
+    "tech/gaa": ["Printing a GAA Transistor"],
+    "tech/nfet": ["Printing a Planar nFET"],
+    "tech/flows": ["Printing a GAA Transistor", "Printing a Planar nFET"],
+    "cli/opc": ["Model-Based OPC"],
+    "cli/vector": ["Vector Imaging"],
+    "cli/multipatterning": ["Self-Aligned Patterning", "Overlay and Pitch Walking"],
+    "cli/device": ["Printing a GAA Transistor", "Printing a Planar nFET"],
 }
 
 
@@ -357,7 +372,7 @@ def build_recipe_notes() -> list[str]:
 def build_measured_numbers(fast: bool = False) -> str:
     import numpy as np
 
-    from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig
+    from litho_sim.core.config import GridConfig, OpticsConfig, ResistConfig, SimulationConfig
     from litho_sim.expose.aerial_image import compute_aerial_image
     from litho_sim.mask.layout import Layout, line_array
     from litho_sim.mask.patterns import lines_and_spaces
@@ -457,6 +472,39 @@ def build_measured_numbers(fast: bool = False) -> str:
         f"Surface rendering sends **{p['surface_points']:,}** points where a volume would "
         f"send **{p['volume_points']:,}** — **{p['ratio']}× lighter**.", "",
     ]
+
+    # --- OPC ---
+    from litho_sim.mask.geometry import Rect
+    from litho_sim.opc import PrintModel, run_opc
+
+    lines += [
+        "## OPC", "",
+        "See [[Model-Based OPC]]. Dense 200/100 nm lines and an isolated line at ArF,",
+        "dose-to-size on a dense anchor, threshold resist, 12 iterations at most.", "",
+        "| grid | fragments | iterations | time | worst EPE | rms EPE |",
+        "|---|---|---|---|---|---|",
+    ]
+    cfg_opc = SimulationConfig.from_tech_node("ArF")
+    for n, px in ((128, 8e-9), (256, 4e-9)):
+        g = GridConfig(n_pixels=n, pixel_size=px)
+        model = PrintModel(cfg_opc.optics, cfg_opc.resist, g, tone="dark")
+        model.dose = model.dose_to_size(
+            Layout(line_array(5, pitch=200e-9, cd=100e-9, length=0.9 * g.grid_size)), 100.0
+        )
+        design = Layout(
+            line_array(3, pitch=200e-9, cd=100e-9, length=0.7 * g.grid_size, centre=(-250e-9, 0))
+            + [Rect("main", 250e-9, 0, 100e-9, 0.7 * g.grid_size)]
+        )
+        t0 = time.perf_counter()
+        res = run_opc(design, model)
+        dt = time.perf_counter() - t0
+        b, a = res.epe_before.stats(), res.epe_after.stats()
+        lines.append(
+            f"| {n}×{n} @ {px*1e9:.0f} nm | {b['n_fragments']} | {len(res.history) - 1} | "
+            f"{dt:.1f} s | {b['max_abs_epe_nm']:.1f} → {a['max_abs_epe_nm']:.1f} nm | "
+            f"{b['rms_epe_nm']:.1f} → {a['rms_epe_nm']:.2f} nm |"
+        )
+    lines.append("")
 
     # --- pitch walking ---
     from litho_sim.patterning import lele

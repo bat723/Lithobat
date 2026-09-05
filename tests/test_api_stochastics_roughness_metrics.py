@@ -12,13 +12,8 @@ statistics live in ``test_stochastic.py``; this file is about the interface.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import litho_sim.analysis
 from litho_sim.analysis import (

@@ -13,13 +13,8 @@ Grids are kept small (64 px, coarse source) so the whole file runs in seconds.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.core import GridConfig, OpticsConfig
 from litho_sim.expose import (
@@ -152,24 +147,27 @@ def test_vector_path_runs_and_is_physical(mask, grid):
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_imaging_model_is_rejected(mask, grid):
-    optics = OpticsConfig(source_grid=5, imaging_model="rigorous")
+def test_unknown_imaging_model_is_rejected():
+    """Refused when the config is built, not several calls later."""
     with pytest.raises(ValueError, match="imaging_model must be"):
-        compute_aerial_image(mask, optics, grid)
+        OpticsConfig(source_grid=5, imaging_model="rigorous")
 
 
-def test_unknown_normalisation_is_rejected(mask, grid):
-    optics = OpticsConfig(source_grid=5, normalisation="bogus")
+def test_unknown_normalisation_is_rejected():
     with pytest.raises(ValueError, match="normalisation must be"):
-        compute_aerial_image(mask, optics, grid)
+        OpticsConfig(source_grid=5, normalisation="bogus")
 
 
-def test_unknown_polarisation_is_rejected_on_vector_path(mask, grid):
-    optics = OpticsConfig(
-        source_grid=5, imaging_model="vector", polarisation="circular-ish"
-    )
+def test_unknown_polarisation_is_rejected_on_vector_path():
     with pytest.raises(ValueError, match="polarisation must be"):
-        compute_aerial_image(mask, optics, grid)
+        OpticsConfig(source_grid=5, imaging_model="vector", polarisation="circular-ish")
+
+
+def test_na_above_the_image_index_is_rejected():
+    """NA = n sin θ, so a dry lens cannot have NA 1.3 — the pair is refused."""
+    with pytest.raises(ValueError, match="sin θ > 1"):
+        OpticsConfig(NA=1.3)
+    OpticsConfig(NA=1.3, n_immersion=1.44)                       # reachable in water
 
 
 def test_normalisation_scale_rejects_unknown_mode():
