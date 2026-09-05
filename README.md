@@ -112,7 +112,7 @@ script under `scripts/` for the invocations the notes have always used.
 
 | Command | What it does | Writes |
 |---|---|---|
-| `litho-sim demo` | one simulation: aerial image, 2-D footprint, 3-D resist profile | `aerial_image.png`, `resist_profile.png`, `resist_profile_3d.png` |
+| `litho-sim demo` | one simulation: aerial image, 2-D footprint, the 3-D resist profile as a tilt-stage SEM micrograph (`--tilt`, `--azimuth`) | `aerial_image.png`, `resist_profile.png`, `resist_profile_3d.png` |
 | `litho-sim bossung` | CD through focus across dose | `bossung_curves.png`, `bossung_data.csv` |
 | `litho-sim window` | the process window: EL, DOF, best focus and dose, EL–DOF curve | `process_window.png`, `cd_heatmap.png`, CSVs |
 | `litho-sim opc` | model-based OPC on a dense array, an isolated line, a tip-to-tip pair and a T | `opc_demo.png` |
@@ -216,7 +216,15 @@ inside the film, attenuated by absorption, modulated by standing waves, and
 developed either column by column or by a moving front that solves the
 eikonal equation.
 
-![A developed 3-D resist profile](results/resist_profile_3d.png)
+![A developed 3-D resist profile, imaged as a tilt-stage SEM micrograph](results/resist_profile_3d.png)
+
+*The 3-D profile is shown as a micrograph, not a drawing: the developed
+surface is rendered off-screen for its normals, depth and material per
+pixel, and the SEM model forms the image from those — the secant yield of
+a tilted surface, bloom at every silhouette, the detector's side, the
+shadow in a trench, the probe's blur and shot noise — under the parallel
+projection a SEM actually has. The stage tilt and rotation are the only
+things chosen; every grey is physics.*
 
 **Stochastics.** A trial draws Poisson photons per voxel, Poisson PAG and
 quencher molecules, and the acid as Poisson conversion events per absorbed

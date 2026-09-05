@@ -151,13 +151,40 @@ def run_demo(args: argparse.Namespace) -> None:
             "3-D profile: %.1f%% of film remaining, sidewall %.1f°",
             100.0 * float(res3["remaining"].mean()), angle,
         )
-        fig3 = resist_profile_3d_figure(
-            res3, cfg.grid,
-            title=f"3-D resist profile – {args.node}, "
-                  f"pitch {args.pitch:.0f} nm / CD {args.cd:.0f} nm "
-                  f"({args.develop_model} develop)",
-        )
-        save_figure(fig3, out / "resist_profile_3d.png")
+        from litho_sim.viz import render
+
+        if render.available():
+            # The profile as a tilt-stage micrograph: the picture a fab
+            # would look at, formed from the developed solid by the same
+            # SE model the SEM tab uses.
+            from litho_sim.viz.plots import plot_tilt_sem
+
+            stage = render.Stage(tilt=args.tilt, azimuth=args.azimuth)
+            sem, buffers = render.tilt_sem_of_profile(
+                None, cfg.grid, field=res3["field"], level=res3["level"],
+                feature=res3["feature"],
+                film_nm=float(resist3d_cfg.thickness) * 1e9, stage=stage,
+            )
+            fig3 = plot_tilt_sem(
+                sem, buffers,
+                title=(f"{args.node}  ·  {args.pitch:.0f} / {args.cd:.0f} nm L/S  ·  "
+                       f"{resist_for(args)}, {resist3d_cfg.thickness * 1e9:.0f} nm  ·  "
+                       f"{args.develop_model} develop  ·  cleaved"),
+                caption=f"stage tilt {args.tilt:g}°, rotation {args.azimuth:g}°",
+            )
+            fig3.savefig(out / "resist_profile_3d.png", dpi=150,
+                         facecolor=fig3.get_facecolor())
+            logger.info("Saved %s", out / "resist_profile_3d.png")
+        else:
+            logger.warning("pyvista is not installed, so the profile is drawn rather "
+                           "than imaged; install the viz3d extra for the tilt-SEM view")
+            fig3 = resist_profile_3d_figure(
+                res3, cfg.grid,
+                title=f"3-D resist profile – {args.node}, "
+                      f"pitch {args.pitch:.0f} nm / CD {args.cd:.0f} nm "
+                      f"({args.develop_model} develop)",
+            )
+            save_figure(fig3, out / "resist_profile_3d.png")
 
     logger.info("Saved plots → %s", out)
 
@@ -306,6 +333,13 @@ def add_parser(subs) -> None:
     add_litho_args(p_demo)
     p_demo.add_argument("--no-3d", action="store_true",
                         help="Skip the 3-D resist profile (2-D footprint only)")
+    p_demo.add_argument("--tilt", type=float, default=40.0, metavar="DEG",
+                        help="Stage tilt of the profile's SEM view, degrees from "
+                             "the wafer normal (default 40)")
+    p_demo.add_argument("--azimuth", type=float, default=20.0, metavar="DEG",
+                        help="Stage rotation of the profile's SEM view about the "
+                             "wafer normal; 0 looks straight along the lines "
+                             "(default 20)")
     p_demo.add_argument("--standing-waves", nargs="?", const=0.35, default=None,
                         type=float, metavar="R",
                         help="Include substrate-reflection standing waves in the "

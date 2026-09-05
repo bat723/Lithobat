@@ -72,6 +72,7 @@ __all__ = [
     "material_topdown_sem", "material_topdown_signal",
     "material_xsection_sem", "material_xsection_signal",
     "stack_topdown_sem", "stack_xsection_sem",
+    "GeometryBuffers", "tilt_signal", "tilt_sem", "screen_occlusion",
 ]
 
 #: Gaussian FWHM → σ.
@@ -106,6 +107,23 @@ class SEMConfig:
         Frames averaged. Noise falls as the square root.
     seed : int
         RNG seed, so an image is reproducible.
+    secant_power : float
+        The exponent in Seiler's tilt law, ``δ ∝ sec^n θ`` — how much
+        brighter a surface gets as it turns away from the beam. Only the
+        tilt view sees the surface at an angle, so only it reads this;
+        the top-down and cross-section models carry the same physics as
+        the edge bloom instead. 0.8 sits inside the measured 0.6–1.3.
+    directionality : float
+        The Everhart–Thornley detector sits to one side of the column, so
+        faces turned towards it collect more of their electrons than faces
+        turned away. 0 is an ideal in-lens detector that sees every
+        direction alike; 1 makes a face pointing straight away from the
+        detector go dark. Tilt view only.
+    shadowing : float
+        How strongly a trench floor darkens because the walls around it
+        block secondary electrons on their way to the detector. 0 turns the
+        term off; 1 lets a fully enclosed floor go to the vacuum level.
+        Tilt view only.
     """
 
     beam_fwhm: float = 3.0e-9
@@ -115,6 +133,9 @@ class SEMConfig:
     electrons_per_pixel: float = 100.0
     frames: int = 4
     seed: int = 0
+    secant_power: float = 0.8
+    directionality: float = 0.5
+    shadowing: float = 0.5
 
     def __post_init__(self) -> None:
         if self.beam_fwhm < 0 or self.escape_length < 0:
@@ -125,6 +146,12 @@ class SEMConfig:
             raise ValueError("electrons_per_pixel must be > 0")
         if int(self.frames) < 1:
             raise ValueError("frames must be >= 1")
+        if self.secant_power < 0:
+            raise ValueError("secant_power must be >= 0")
+        if not 0.0 <= self.directionality <= 1.0:
+            raise ValueError("directionality must be in [0, 1]")
+        if not 0.0 <= self.shadowing <= 1.0:
+            raise ValueError("shadowing must be in [0, 1]")
 
     @property
     def electrons(self) -> float:
@@ -140,7 +167,7 @@ class SEMImage:
     signal: NDArray[np.float64]     # the same without shot noise
     pixel_size: float               # column pitch [m]
     row_size: float                 # row pitch [m] — dz for a cross-section
-    mode: str                       # "topdown" | "xsection"
+    mode: str                       # "topdown" | "xsection" | "tilt"
     electrons: float                # primaries per pixel behind `image`
     row_origin: float = 0.0         # height of row 0 [m]; negative under a film
 
@@ -733,4 +760,260 @@ def measure_cd_sem(
     return SEMMeasurement(
         cd=(right - left) * px, left=left * px, right=right * px,
         feature=feature, profile=profile, x=np.asarray(x, dtype=np.float64), edges=pos * px,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The tilt view: a cleaved sample on a tilted stage
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GeometryBuffers:
+    """What the beam sees of a 3-D surface, pixel by pixel, before any physics.
+
+    A tilt-stage micrograph is an image of a *surface* seen from an angle,
+    and the three quantities the SE signal depends on are all geometric:
+    which way each visible patch faces, how far along the beam it sits,
+    and what it is made of. A renderer with a depth buffer produces all
+    three in one pass (:func:`litho_sim.viz.render.render_buffers`), and
+    this is the hand-off — plain arrays, so the physics in
+    :func:`tilt_signal` stays numpy and testable on synthetic geometry.
+
+    Attributes
+    ----------
+    normals : (rows, cols, 3)
+        Unit surface normal at each pixel, world axes, pointing out of the
+        solid. NaN where nothing is seen.
+    depth : (rows, cols)
+        Distance along the beam to the surface [nm]. NaN where nothing is
+        seen — the vacuum.
+    material : (rows, cols) uint8
+        0 nothing, 1 substrate, 2 resist.
+    view : (3,)
+        The beam direction, world axes, unit — from the column towards the
+        sample. The projection is parallel, as a SEM's is: the scan angles
+        at these magnifications are a fraction of a degree.
+    up, right : (3,)
+        The image's row and column axes in world space, unit.
+    focal : (3,)
+        The world point [nm] at the image centre.
+    pixel_nm : float
+        The scan pitch: nanometres per pixel, the same across and down.
+    film_nm : float
+        The as-coated film thickness [nm], so a full-height silhouette
+        blooms exactly ``edge_yield`` — the same reference the top-down
+        model uses.
+    """
+
+    normals: NDArray[np.float64]
+    depth: NDArray[np.float64]
+    material: NDArray[np.uint8]
+    view: NDArray[np.float64]
+    up: NDArray[np.float64]
+    right: NDArray[np.float64]
+    focal: NDArray[np.float64]
+    pixel_nm: float
+    film_nm: float
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.depth.shape  # type: ignore[return-value]
+
+    @property
+    def seen(self) -> NDArray[np.bool_]:
+        return self.material > 0
+
+    def project(self, points_nm: NDArray[np.float64]) -> NDArray[np.float64]:
+        """World points [nm] → ``(col, row)`` image coordinates, sub-pixel.
+
+        Parallel projection makes this a dot product with the image axes:
+        no perspective, so a length on the sample projects to the same
+        number of pixels wherever it lies. A scale bar drawn with it is
+        measured, not typed.
+        """
+        p = np.atleast_2d(np.asarray(points_nm, dtype=np.float64)) - self.focal
+        rows, cols = self.shape
+        col = cols / 2.0 + (p @ self.right) / self.pixel_nm
+        row = rows / 2.0 - (p @ self.up) / self.pixel_nm
+        return np.column_stack([col, row])
+
+
+def screen_occlusion(
+    depth_nm: NDArray[np.float64],
+    pixel_nm: float,
+    radii_px: tuple[int, ...] = (2, 4, 8, 16, 32),
+    n_directions: int = 8,
+    coarsen: int = 2,
+) -> NDArray[np.float64]:
+    """How much of the sky each surface pixel can see, from the depth buffer.
+
+    Secondary electrons leave the surface and drift to the detector, and
+    a floor between two walls loses the ones that hit a wall on the way.
+    This is a horizon-based estimate of that: in each of ``n_directions``
+    across the image, and at each radius, how far *above* the pixel's
+    surface a neighbour sits — a neighbour closer to the beam by ``Δd``
+    at a lateral distance ``r`` subtends an elevation ``atan(Δd / r)``.
+    The largest elevation in a direction is that direction's horizon, and
+    the occlusion is the mean horizon over all directions, 0 for an open
+    plane and 1 for a pixel walled in on every side.
+
+    ``depth_nm`` is distance along the beam, NaN in the vacuum. The vacuum
+    is treated as infinitely far — it never occludes anything.
+
+    The horizon is a smooth, low-frequency quantity, so it is found on a
+    grid ``coarsen`` times coarser than the frame and interpolated back —
+    at 2 that is a quarter of the work for no visible difference. The
+    radii are in frame pixels either way.
+    """
+    d_full = np.asarray(depth_nm, dtype=np.float64)
+    seen_full = np.isfinite(d_full)
+    if not seen_full.any():
+        return np.zeros_like(d_full)
+    k = max(int(coarsen), 1)
+    d = d_full[::k, ::k] if k > 1 else d_full
+    seen = np.isfinite(d)
+    far = float(np.nanmax(d_full))
+    d = np.where(seen, d, far + 1e6)
+    px = float(pixel_nm) * k
+    radii = sorted({max(int(round(r / k)), 1) for r in radii_px})
+    R = max(radii)
+    rows, cols = d.shape
+    # One padded copy; every neighbour is a slice of it, not a roll.
+    dp = np.pad(d, R, mode="edge")
+    angles = np.arange(n_directions) * (2.0 * np.pi / n_directions)
+    total = np.zeros_like(d)
+    for a in angles:
+        dx, dy = np.cos(a), np.sin(a)
+        best = np.zeros_like(d)                 # the steepest tan(elevation)
+        for r in radii:
+            sx, sy = int(round(r * dx)), int(round(r * dy))
+            if sx == 0 and sy == 0:
+                continue
+            neighbour = dp[R + sy:R + sy + rows, R + sx:R + sx + cols]
+            lateral = np.hypot(sx, sy) * px
+            np.maximum(best, (d - neighbour) / lateral, out=best)
+        total += np.arctan(best)
+    horizon = np.clip(total / (n_directions * (np.pi / 2.0)), 0.0, 1.0)
+    horizon = np.where(seen, horizon, 0.0)
+    if k > 1:
+        from scipy.ndimage import zoom
+
+        full = zoom(horizon, k, order=1, mode="nearest")
+        horizon = full[:d_full.shape[0], :d_full.shape[1]]
+        if horizon.shape != d_full.shape:       # the coarse grid may fall short by k-1
+            pad = ((0, d_full.shape[0] - horizon.shape[0]), (0, d_full.shape[1] - horizon.shape[1]))
+            horizon = np.pad(horizon, pad, mode="edge")
+    return np.where(seen_full, np.clip(horizon, 0.0, 1.0), 0.0)
+
+
+def tilt_signal(
+    buffers: GeometryBuffers,
+    cfg: SEMConfig,
+    detector: NDArray[np.float64] | None = None,
+) -> NDArray[np.float64]:
+    """The noiseless SE signal of a tilted, cleaved sample.
+
+    The same three terms as the other two views, applied to a surface seen
+    at an angle, plus the two that only exist once there *is* an angle:
+
+    * **Material** — 1 on resist, ``substrate_yield`` on the substrate,
+      ``VACUUM_YIELD`` where the beam misses the sample.
+    * **Tilt yield** — Seiler's ``sec^n θ`` between the surface normal
+      and the beam, capped at grazing incidence where the law diverges but
+      the real yield saturates.
+    * **Edge bloom** — where the depth jumps between neighbouring pixels
+      the beam is crossing a silhouette, and electrons born on the far
+      side of it escape through the free surface behind. The bloom is the
+      depth crossed per pixel in units of the film thickness, times
+      ``edge_yield``, spread over ``escape_length``. A full-height wall
+      seen edge-on scores the same ``edge_yield`` the top-down model gives
+      it.
+    * **Detector side** — the Everhart–Thornley detector sits off-axis, so
+      a face turned towards it is brighter than one turned away, by
+      ``directionality``.
+    * **Shadowing** — a floor between walls sees less of the detector
+      (:func:`screen_occlusion`), by ``shadowing``.
+
+    Then the probe blurs everything by ``beam_fwhm``. Units are SE per
+    primary with the flat resist top facing the beam at 1, so the same
+    ``electrons_per_pixel`` gives the same noise as the other views.
+
+    Parameters
+    ----------
+    buffers : GeometryBuffers
+    cfg : SEMConfig
+    detector : (3,), optional
+        Direction from the sample towards the detector, world axes. The
+        default puts it above and behind the column — up the image and
+        towards the beam — which is where a chamber detector sits relative
+        to a tilted stage.
+    """
+    n = np.asarray(buffers.normals, dtype=np.float64)
+    depth = np.asarray(buffers.depth, dtype=np.float64)
+    material = np.asarray(buffers.material)
+    seen = material > 0
+    px = float(buffers.pixel_nm)
+    if n.shape[:2] != depth.shape or material.shape != depth.shape:
+        raise ValueError("normals, depth and material must share the image shape")
+    if px <= 0:
+        raise ValueError("pixel_nm must be > 0")
+    view = np.asarray(buffers.view, dtype=np.float64)
+    view = view / np.linalg.norm(view)
+
+    n_safe = np.where(seen[..., None], n, 0.0)
+    # The angle between the surface normal and the beam. Outward normals
+    # face the column, so -n·v is the cosine; the abs guards a renderer
+    # that hands back the inward one.
+    cos_t = np.abs(n_safe @ view)
+    cos_t = np.where(seen, np.clip(cos_t, 0.08, 1.0), 1.0)
+    tilt_yield = np.clip(cos_t ** (-float(cfg.secant_power)), 1.0, 4.0)
+
+    base = np.where(material == 2, 1.0, cfg.substrate_yield)
+    base = np.where(seen, base, VACUUM_YIELD)
+
+    # Silhouettes: the depth crossed per pixel, in film thicknesses. The
+    # vacuum is infinitely far; a wafer edge against it blooms too, as it
+    # does on a real micrograph.
+    far = float(np.nanmax(depth[seen])) if seen.any() else 0.0
+    d = np.where(seen, depth, far + 4.0 * max(float(buffers.film_nm), 1.0))
+    step = np.hypot(np.gradient(d, axis=0), np.gradient(d, axis=1))
+    film = max(float(buffers.film_nm), 1e-9)
+    bloom = cfg.edge_yield * np.clip(step / film, 0.0, 1.0)
+    lam_px = float(cfg.escape_length) * 1e9 / px
+    if lam_px > 0:
+        bloom = gaussian_filter(bloom, lam_px, mode="nearest")
+    bloom = np.where(seen, bloom, 0.0)
+
+    if detector is None:
+        up = np.asarray(buffers.up, dtype=np.float64)
+        det = up - view
+    else:
+        det = np.asarray(detector, dtype=np.float64)
+    det = det / max(np.linalg.norm(det), 1e-12)
+    facing = np.clip(0.5 + 0.5 * (n_safe @ det), 0.0, 1.0)
+    side = (1.0 - cfg.directionality) + cfg.directionality * facing
+
+    shade = 1.0 - cfg.shadowing * screen_occlusion(depth, px) if cfg.shadowing > 0 else 1.0
+
+    signal = np.where(seen, base * tilt_yield * (1.0 + bloom) * side * shade, VACUUM_YIELD)
+    sigma_px = float(cfg.beam_fwhm) * 1e9 * _FWHM_TO_SIGMA / px
+    if sigma_px > 0:
+        signal = gaussian_filter(signal, sigma_px, mode="nearest")
+    return signal
+
+
+def tilt_sem(
+    buffers: GeometryBuffers,
+    cfg: SEMConfig | None = None,
+    detector: NDArray[np.float64] | None = None,
+    rng: np.random.Generator | None = None,
+) -> SEMImage:
+    """A tilt-stage SEM frame of a rendered surface. See :func:`tilt_signal`."""
+    cfg = cfg or SEMConfig()
+    signal = tilt_signal(buffers, cfg, detector)
+    px = float(buffers.pixel_nm) * 1e-9
+    return SEMImage(
+        image=_sample(signal, cfg, rng), signal=signal,
+        pixel_size=px, row_size=px, mode="tilt", electrons=cfg.electrons,
     )

@@ -554,6 +554,112 @@ def plot_opc(result, axes=None, clip_nm: tuple[float, float, float, float] | Non
     return fig, tuple(axes)
 
 
+#: The micrograph's own surround. A SEM frame is black at its edges by
+#: nature — the vacuum — and its data bar is the instrument's, not the
+#: page's, so this one figure is dark where every other is paper.
+_SEM_BG = "#101010"
+_SEM_INK = "#e6e6e6"
+_SEM_INK2 = "#9a9a9a"
+_SEM_MONO = "DejaVu Sans Mono"
+
+
+def _stretch(image: np.ndarray, low: float = 0.5, high: float = 99.7,
+             gamma: float = 0.85) -> np.ndarray:
+    """Display contrast: a percentile stretch and a mild gamma — the
+    brightness and contrast knobs on the tool, applied to the frame."""
+    lo, hi = np.percentile(image, low), np.percentile(image, high)
+    return np.clip((image - lo) / max(hi - lo, 1e-12), 0.0, 1.0) ** gamma
+
+
+def plot_tilt_sem(
+    sem,
+    buffers,
+    *,
+    title: str = "",
+    caption: str = "",
+    scale_bar_nm: float | None = 100.0,
+    fig=None,
+    dpi: float = 150.0,
+):
+    """A tilt-stage micrograph as a figure: the frame, a scale bar on the
+    sample, and the tool's data bar under it.
+
+    Parameters
+    ----------
+    sem : SEMImage
+        From :func:`~litho_sim.metrology.sem.tilt_sem`.
+    buffers : GeometryBuffers
+        The geometry the frame was formed from. Carries the projection,
+        which is what puts the scale bar *on the cleaved face* at its true
+        projected length rather than in a corner at a typed one.
+    title, caption : str
+        The two lines of the data bar: what was printed, and how it was
+        imaged.
+    scale_bar_nm : float, optional
+        Length of the bar lying on the cleaved face, along x. ``None``
+        draws none.
+    fig : Figure, optional
+        Draw into this figure (cleared) rather than a new one — the app's
+        canvas.
+    dpi : float
+        For a new figure: the frame is shown pixel for pixel at this dpi.
+    """
+    import matplotlib.pyplot as plt
+
+    image = _stretch(np.asarray(sem.image, dtype=np.float64))
+    rows, cols = image.shape
+    bar_px = 110
+    if scale_bar_nm:
+        bar_note = f"scale bar {scale_bar_nm:g} nm on the cleaved face"
+    else:
+        bar_note = ""
+    tool = " · ".join(
+        s for s in (bar_note, f"{buffers.pixel_nm:.2f} nm/px",
+                    f"{sem.electrons:.0f} e⁻/px", caption) if s
+    )
+    if fig is None:
+        # The frame is shown pixel for pixel; a data bar longer than the
+        # frame is wide widens the figure rather than running off it.
+        width = max(cols, int(len(title) * 0.62 * 10.5 * dpi / 72) + 40,
+                    int(len(tool) * 0.62 * 9.0 * dpi / 72) + 40)
+        fig = plt.figure(figsize=(width / dpi, (rows + bar_px) / dpi), facecolor=_SEM_BG)
+        ax_w = cols / width
+    else:
+        fig.clf()
+        fig.set_facecolor(_SEM_BG)
+        ax_w = 1.0
+    frac = bar_px / (rows + bar_px)
+    ax = fig.add_axes([0.0, frac, ax_w, 1.0 - frac])
+    ax.imshow(image, cmap="gray", vmin=0.0, vmax=1.0, interpolation="bilinear",
+              aspect="equal")
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(rows - 0.5, -0.5)
+    ax.set_axis_off()
+
+    if scale_bar_nm:
+        # On the cleaved face, a third of the way down the substrate, from
+        # near the left edge of the field: world points, projected.
+        x0 = 0.08 * cols * float(buffers.pixel_nm)
+        z = -0.4 * max(float(np.abs(buffers.focal[2])), 1.0) - 10.0
+        z = min(z, -8.0)
+        ends = np.array([[x0, -0.5, z], [x0 + float(scale_bar_nm), -0.5, z]])
+        (c0, r0), (c1, r1) = buffers.project(ends)
+        ax.plot([c0, c1], [r0, r1], color="white", lw=2.6, solid_capstyle="butt")
+        ax.plot([c0, c1], [r0, r1], color="black", lw=4.2, solid_capstyle="butt", zorder=1)
+        ax.plot([c0, c1], [r0, r1], color="white", lw=2.6, solid_capstyle="butt", zorder=2)
+
+    # In a canvas of fixed width the lines shrink to fit rather than run off.
+    fig_px = fig.get_figwidth() * fig.dpi
+    def _fits(text: str, size: float) -> float:
+        need = len(text) * 0.62 * size * fig.dpi / 72 + 0.04 * fig_px
+        return size if need <= fig_px else max(size * fig_px / need, 6.0)
+    fig.text(0.02, 0.56 * frac, title, color=_SEM_INK, fontsize=_fits(title, 10.5),
+             family=_SEM_MONO, va="center")
+    fig.text(0.02, 0.22 * frac, tool, color=_SEM_INK2, fontsize=_fits(tool, 9.0),
+             family=_SEM_MONO, va="center")
+    return fig
+
+
 def save_figure(
     fig: Figure,
     path: str | Path,

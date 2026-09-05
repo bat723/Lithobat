@@ -63,6 +63,18 @@ SEM_SPECS: tuple[ParamSpec, ...] = (
     ParamSpec("seed", "Seed", "int", 0, 0, 999, 1,
               group="SEM", target="view", stage="view",
               help="Noise seed. The same seed gives the same grain."),
+    ParamSpec("directionality", "Detector side", "float", 0.5, 0.0, 1.0, 0.05,
+              group="SEM", target="view", stage="view",
+              help="The Everhart–Thornley detector sits to one side, so a face "
+                   "turned towards it is brighter than one turned away. 0 is "
+                   "an in-lens detector that sees every direction alike.\n\n"
+                   "Acts on the tilt view (the Develop tab's 3-D profile); "
+                   "top-down and cross-section see every face square on."),
+    ParamSpec("shadowing", "Trench shadow", "float", 0.5, 0.0, 1.0, 0.05,
+              group="SEM", target="view", stage="view",
+              help="How much a floor between walls darkens because the walls "
+                   "block its electrons on the way to the detector.\n\n"
+                   "Tilt view only."),
 )
 
 #: Rows the cross-section of a 2-D print is rasterised onto. The 2-D path
@@ -263,6 +275,8 @@ class SemTab(QtWidgets.QWidget):
             electrons_per_pixel=float(v["electrons_per_pixel"]),
             frames=int(v["frames"]),
             seed=int(v["seed"]),
+            directionality=float(v["directionality"]),
+            shadowing=float(v["shadowing"]),
         )
 
     @property

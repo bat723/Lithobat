@@ -183,6 +183,32 @@ def run(args: argparse.Namespace) -> int:
     out = out_dir / "stochastic_demo.png"
     save_figure(fig, out)
     print(f"figure → {out}   [{time.perf_counter() - t0:.1f} s]")
+
+    if profile is not None:
+        from litho_sim.viz import render
+
+        if render.available():
+            # One trial, cleaved and put under the microscope: the arrival
+            # field gives the surface to sub-voxel accuracy, so the
+            # roughness on the walls is the trial's, not the grid's.
+            from litho_sim.viz.plots import plot_tilt_sem
+
+            sem, buffers = render.tilt_sem_of_profile(
+                None, grid3, field=res3.arrival[0], level=float(res3.level),
+                film_nm=float(cal.resist.thickness) * 1e9,
+            )
+            fig_sem = plot_tilt_sem(
+                sem, buffers,
+                title=(f"{args.node}  ·  {args.pitch:.0f} / {args.cd:.0f} nm L/S  ·  "
+                       f"{resist_for(args)}, {cal.resist.thickness * 1e9:.0f} nm  ·  "
+                       f"stochastic trial  ·  cleaved"),
+                caption=f"{args.profile_pixel_nm:g} nm voxels",
+            )
+            out_sem = out_dir / "stochastic_profile_sem.png"
+            fig_sem.savefig(out_sem, dpi=150, facecolor=fig_sem.get_facecolor())
+            print(f"micrograph → {out_sem}")
+        else:
+            print("  (pyvista not installed: no tilt-SEM micrograph of the trial)")
     if not args.no_show:
         plt.show()
     return 0

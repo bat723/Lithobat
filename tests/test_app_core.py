@@ -547,7 +547,7 @@ def test_3d_knobs_do_not_disturb_the_2d_image():
 
     for key, value in (("thickness", 200.0), ("n_z_slices", 21),
                        ("develop_model", "mack"), ("standing_waves", True),
-                       ("z_exaggeration", 4.0)):
+                       ("tilt", 55.0), ("azimuth", -10.0)):
         p.set(key, value)
         compute_imaging(p, pipe)
 
@@ -555,8 +555,9 @@ def test_3d_knobs_do_not_disturb_the_2d_image():
 
 
 def test_view_knobs_are_not_physics():
-    """z-exaggeration must invalidate nothing at all."""
-    assert ParameterModel.stages_invalidated_by("z_exaggeration") == ()
+    """The stage angles must invalidate nothing at all."""
+    assert ParameterModel.stages_invalidated_by("tilt") == ()
+    assert ParameterModel.stages_invalidated_by("azimuth") == ()
     assert ParameterModel.stages_invalidated_by("thickness") == ("profile3d",)
     assert "aerial" not in ParameterModel.stages_invalidated_by("thickness")
 

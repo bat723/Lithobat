@@ -461,11 +461,22 @@ SPECS: tuple[ParamSpec, ...] = (
               help="Which plane in the film the defocus setting refers to."),
 
     # -- 3-D view (no physics) ----------------------------------------
-    ParamSpec("z_exaggeration", "Z exaggeration", "float", 2.0, 1.0, 6.0, 0.5,
+    # The developed solid is shown as a tilt-stage SEM micrograph. These two
+    # are the stage: where the sample sits under the column. The instrument
+    # itself is the SEM tab's — one microscope, wherever it is pointed.
+    ParamSpec("tilt", "Stage tilt", "float", 40.0, 0.0, 80.0, 5.0, "°",
               group="3-D view", target="view",
               stage="view",
-              help="Stretch the picture vertically for legibility. Scales "
-                   "the drawing, never the mesh — live, and never recomputes."),
+              help="Angle between the beam and the wafer normal. 0 looks "
+                   "straight down; cross-section work is done at 30–60°, "
+                   "where the cleaved face and the sidewalls both show. "
+                   "Live — re-images the profile in hand, never recomputes it."),
+    ParamSpec("azimuth", "Stage rotation", "float", 20.0, -90.0, 90.0, 5.0, "°",
+              group="3-D view", target="view",
+              stage="view",
+              help="Rotation about the wafer normal. 0 looks straight along "
+                   "the lines at the cleaved face; a few degrees either way "
+                   "turns one sidewall of every line towards the beam."),
 )
 
 SPECS_BY_KEY: dict[str, ParamSpec] = {s.key: s for s in SPECS}

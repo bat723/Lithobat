@@ -28,7 +28,7 @@ from litho_sim.analysis import compute_nils
 from litho_sim.app.params import ParameterModel
 from litho_sim.bake import apply_peb
 from litho_sim.develop import (
-    develop_3d,
+    develop_surface,
     film_remaining,
     is_cleared,
     is_sealed,
@@ -409,6 +409,12 @@ class Profile3DResult:
     label: str
     elapsed_ms: float
     signature: tuple
+    #: The surface to sub-voxel accuracy: resist where ``field`` is on the
+    #: ``feature`` side of ``level`` (see ``develop_surface``). What the
+    #: micrograph is rendered from; ``None`` falls back to the voxels.
+    field: NDArray[np.float64] | None = None
+    level: float = 0.0
+    feature: str = "above"
 
     @property
     def summary(self) -> str:
@@ -461,9 +467,11 @@ def compute_profile_3d(
             bake="car" if params.resist_model == "car" else "gaussian",
         )
         remaining, latent = result["remaining"], result["latent"]
+        field, level, feature = result["field"], result["level"], result["feature"]
     else:
         latent, _z = pipeline.profile_latent(params)
-        remaining = develop_3d(latent, resist_cfg, grid, model=params.develop_model)
+        remaining, field, level, feature = develop_surface(
+            latent, resist_cfg, grid, model=params.develop_model)
 
     nz, ny, nx = remaining.shape
     row = ny // 2
@@ -492,6 +500,9 @@ def compute_profile_3d(
         label=label,
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
         signature=params.stage_signature("profile3d"),
+        field=field,
+        level=float(level),
+        feature=feature,
     )
 
 

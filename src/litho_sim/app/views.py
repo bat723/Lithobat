@@ -1,7 +1,9 @@
 """Figure views: the canvases the app draws results on.
 
 Every 2-D picture is a matplotlib canvas built on :mod:`litho_sim.viz.theme`;
-the two solids are :class:`~litho_sim.app.solid_view.SolidView`. The rules
+the wafer stack's solid is :class:`~litho_sim.app.solid_view.SolidView`, and
+the developed resist is imaged rather than drawn — :class:`TiltSemView` is
+a tilt-stage micrograph of it. The rules
 the theme states — a title names, a caption counts, every image is in
 nanometres, nothing dashed, no legend on the data — are applied here once
 per view, so a tab's picture and the CLI's figure of the same quantity look
@@ -10,6 +12,7 @@ like the same instrument.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
@@ -23,7 +26,8 @@ from litho_sim.app.compute import (
 )
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
 from litho_sim.app.solid_view import SolidView
-from litho_sim.viz import theme
+from litho_sim.metrology.sem import SEMConfig
+from litho_sim.viz import render, theme
 from litho_sim.viz.theme import CMAP, INK2, MUTED, SERIES
 
 logger = logging.getLogger(__name__)
@@ -504,20 +508,133 @@ class ProfilePanels(_CanvasView):
         self._paint()
 
 
-class Profile3DView(QtWidgets.QWidget):
-    """The developed solid beside its section and latent image.
+NO_RENDERER = (
+    "The tilt-SEM view needs VTK — install the viz3d extra:\n"
+    "    pip install -e '.[viz3d]'\n"
+    "(pyvista)"
+)
 
-    The solid is a :class:`SolidView`; the two 2-D panels a
-    :class:`ProfilePanels`. A matplotlib canvas and a VTK render window
-    cannot share a figure, so they share a splitter.
+
+class TiltSemView(_CanvasView):
+    """The developed resist as a tilt-stage SEM micrograph.
+
+    Not a drawing of the solid: an image of it, formed the way the SEM tab
+    forms its top-down and cross-section frames, from the geometry a
+    depth-buffer render measures (:mod:`litho_sim.viz.render`). The stage
+    (tilt, rotation) is the Develop tab's; the instrument is the SEM tab's.
+
+    Two costs, kept apart. Moving the stage re-renders the geometry —
+    a few hundred milliseconds for a 128-pixel field. Turning an
+    instrument knob only re-forms the signal from the geometry in hand,
+    which is numpy over an image and quick. The geometry is cached against
+    the profile and the stage, so a knob never pays for a render.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.solid = SolidView()
+        self.figure.set_layout_engine("none")
+        self.ax = self.figure.add_subplot(111)
+        self._profile: Profile3DResult | None = None
+        self._grid = None
+        self._cfg = SEMConfig()
+        self._stage = render.Stage()
+        self._buffers = None
+        self._buffers_key: tuple | None = None
+        self.last = None            # the SEMImage on screen
+
+    @property
+    def available(self) -> bool:
+        return render.available()
+
+    def show(self, r: Profile3DResult, grid, cfg: SEMConfig | None = None,
+             *, tilt: float | None = None, azimuth: float | None = None) -> None:
+        self._profile, self._grid = r, grid
+        if cfg is not None:
+            self._cfg = cfg
+        if tilt is not None or azimuth is not None:
+            self._stage = dataclasses.replace(
+                self._stage,
+                tilt=float(self._stage.tilt if tilt is None else tilt),
+                azimuth=float(self._stage.azimuth if azimuth is None else azimuth),
+            )
+        self._render()
+
+    def set_stage(self, tilt: float, azimuth: float) -> None:
+        """Move the stage. Re-images the profile in hand, if there is one."""
+        self._stage = dataclasses.replace(self._stage, tilt=float(tilt), azimuth=float(azimuth))
+        if self._profile is not None:
+            self._render()
+
+    def set_instrument(self, cfg: SEMConfig) -> None:
+        """The SEM tab's knobs moved. Re-forms the image from the cached geometry."""
+        self._cfg = cfg
+        if self._profile is not None:
+            self._render()
+
+    def _geometry(self):
+        r, grid, st = self._profile, self._grid, self._stage
+        key = (id(r), r.signature, st.tilt, st.azimuth, st.pixel_nm, st.frame_px)
+        if self._buffers is None or self._buffers_key != key:
+            px, dz = float(grid.pixel_size) * 1e9, float(grid.dz) * 1e9
+            if r.field is not None:
+                surface = render.profile_surface(
+                    field=r.field, level=r.level, feature=r.feature, spacing_nm=(dz, px, px))
+            else:
+                surface = render.profile_surface(r.remaining, spacing_nm=(dz, px, px))
+            nz, ny, nx = r.remaining.shape
+            self._buffers = render.render_buffers(
+                surface, (nx * px, ny * px), float(r.height_nm), st, voxel_nm=(px, px))
+            self._buffers_key = key
+        return self._buffers
+
+    def _render(self) -> None:
+        from litho_sim.metrology.sem import tilt_sem
+        from litho_sim.viz.plots import plot_tilt_sem
+
+        if not self.available:
+            self.show_placeholder(NO_RENDERER)
+            return
+        r = self._profile
+        assert r is not None
+        buffers = self._geometry()
+        sem = tilt_sem(buffers, self._cfg)
+        self.last = sem
+        self._placeholder_art = None
+        self._artists.clear()
+        plot_tilt_sem(
+            sem, buffers, fig=self.figure,
+            title=f"Developed resist  ·  {r.label}",
+            caption=(f"stage tilt {self._stage.tilt:g}°, rotation {self._stage.azimuth:g}°"
+                     f"  ·  {r.summary.replace('    ', ' · ')}"),
+        )
+        self.ax = self.figure.axes[0]
+        self.canvas.draw_idle()
+
+    def show_placeholder(self, message: str) -> None:
+        self._profile = None
+        self.last = None
+        self.figure.clf()
+        self.figure.set_facecolor(theme.SURFACE)
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_axis_off()
+        self._placeholder_art = theme.placeholder(
+            self.ax, message if self.available else NO_RENDERER)
+        self.canvas.draw_idle()
+
+
+class Profile3DView(QtWidgets.QWidget):
+    """The developed resist, imaged, beside its section and latent image.
+
+    The micrograph is a :class:`TiltSemView`; the two 2-D panels a
+    :class:`ProfilePanels`. Two canvases, one splitter.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.sem = TiltSemView()
         self.panels = ProfilePanels()
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.solid)
+        self.splitter.addWidget(self.sem)
         self.splitter.addWidget(self.panels)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
@@ -533,26 +650,23 @@ class Profile3DView(QtWidgets.QWidget):
     def canvas(self):
         return self.panels.canvas
 
-    def show_profile(self, r: Profile3DResult, grid, z_exaggeration: float = 1.0,
-                     *, reset_camera: bool | None = None) -> None:
-        from litho_sim.viz.viz3d import resist_stack_for_display
-
-        stack = resist_stack_for_display(r.remaining, grid)
-        self.solid.show_stack(
-            stack, f"Developed resist — {r.label}", z_exaggeration,
-            caption=r.summary.replace("    ", " · "), reset_camera=reset_camera,
-        )
+    def show_profile(self, r: Profile3DResult, grid, cfg: SEMConfig | None = None,
+                     *, tilt: float | None = None, azimuth: float | None = None) -> None:
+        self.sem.show(r, grid, cfg, tilt=tilt, azimuth=azimuth)
         self.panels.show(r, grid)
 
-    def set_z_exaggeration(self, z: float) -> None:
-        self.solid.set_z_exaggeration(z)
+    def set_stage(self, tilt: float, azimuth: float) -> None:
+        self.sem.set_stage(tilt, azimuth)
+
+    def set_instrument(self, cfg: SEMConfig) -> None:
+        self.sem.set_instrument(cfg)
 
     def show_placeholder(self, message: str) -> None:
-        self.solid.show_placeholder(message)
+        self.sem.show_placeholder(message)
         self.panels.show_placeholder(message)
 
     def shutdown(self) -> None:
-        self.solid.shutdown()
+        """Nothing to release: the micrograph is a matplotlib canvas."""
 
 
 class SectionView(_CanvasView):

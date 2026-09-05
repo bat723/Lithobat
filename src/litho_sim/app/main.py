@@ -207,6 +207,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.simulate_tab.run_print.connect(self._request_print)
         self.simulate_tab.run_profile.connect(self._request_3d)
+        # One microscope: the SEM tab's instrument also images the Develop
+        # tab's 3-D profile, so its knobs re-form that picture too.
+        self.sem_tab.form.changed.connect(
+            lambda _k: self.profile_view.set_instrument(self.sem_tab.config()))
         self.stack_tab.run_requested.connect(self._request_flow)
         self.stack_tab.import_requested.connect(self._import_profile)
         # The SEM images whatever step the Wafer Stack tab is showing — a
@@ -237,9 +241,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.step_tabs["Mask"].panel.refresh_mask_models()
 
         if spec.stage == "view":
-            # Z exaggeration changes the picture, not the physics — and not
-            # even the mesh: it is a scale on the actors, so it is live.
-            self.profile_view.set_z_exaggeration(float(self.model["z_exaggeration"]))
+            # The stage moved: the picture changes, the physics does not.
+            # The profile in hand is re-imaged from the new angle.
+            self.profile_view.set_stage(float(self.model["tilt"]),
+                                        float(self.model["azimuth"]))
             return
 
         if spec.stage == "mask":
@@ -350,7 +355,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.profile_view.show_profile(
             self._profile,
             self._profile_grid,
-            z_exaggeration=float(self.model["z_exaggeration"]),
+            self.sem_tab.config(),
+            tilt=float(self.model["tilt"]),
+            azimuth=float(self.model["azimuth"]),
         )
 
     @QtCore.Slot(object)

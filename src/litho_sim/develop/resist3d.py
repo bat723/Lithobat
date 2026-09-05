@@ -689,6 +689,40 @@ def develop_3d(
     return remaining
 
 
+def develop_surface(
+    latent: NDArray[np.float64],
+    resist: ResistConfig,
+    grid: GridConfig,
+    model: str = "threshold",
+    require_access: bool = True,
+) -> tuple[NDArray[np.bool_], NDArray[np.float64], float, str]:
+    """Develop, and keep the field the solid is a level set of.
+
+    ``(remaining, field, level, feature)`` — the boolean volume
+    :func:`develop_3d` returns, plus the continuous field of
+    :func:`arrival_field` it was thresholded from. The volume knows the
+    surface to the nearest voxel; the field knows it to a fraction of one,
+    and that is the difference between a rendered wall with 4 nm terraces
+    on it and the wall the physics actually produced. Anything that draws
+    or measures the surface should take the field.
+
+    For the finite-rate models the develop is done once, here; for the
+    threshold model the field is the latent image and the volume keeps its
+    access check.
+    """
+    if model in ("mack", "front"):
+        field, level, feature = arrival_field(latent, resist, grid, model=model)
+        remaining = field > level
+        logger.debug(
+            "Develop (%s): %.1f%% remains after %.0f s",
+            model, 100.0 * float(remaining.mean()), resist.develop_time,
+        )
+        return remaining, field, level, feature
+    remaining = develop_3d(latent, resist, grid, model=model, require_access=require_access)
+    field, level, feature = arrival_field(latent, resist, grid, model=model)
+    return remaining, field, level, feature
+
+
 # ---------------------------------------------------------------------------
 # Convenience: full 3-D print
 # ---------------------------------------------------------------------------
@@ -728,7 +762,10 @@ def print_resist_3d(
     -------
     dict
         ``intensity``, ``pac`` (after absorption), ``latent`` (after the
-        bake), ``remaining`` (bool, True = resist left), and ``z``.
+        bake), ``remaining`` (bool, True = resist left), ``z``, and the
+        surface to sub-voxel accuracy as ``field``, ``level`` and
+        ``feature`` (see :func:`develop_surface`): resist is where the
+        field lies on the *feature* side of the level.
     """
     intensity, z = exposure_volume(mask, optics, grid, resist, dose=dose)
     if standing_waves:
@@ -739,7 +776,7 @@ def print_resist_3d(
     # quadratic. Same rule as the 2-D engine's simulate_resist().
     vol = latent_volume(intensity, resist, grid, bake=bake, bleaching=bleaching)
     pac, latent = vol["pac"], vol["latent"]
-    remaining = develop_3d(latent, resist, grid, model=develop_model)
+    remaining, field, level, feature = develop_surface(latent, resist, grid, model=develop_model)
 
     frac = float(remaining.mean())
     if frac > 0.995 and standing_waves and develop_model == "threshold":
@@ -763,6 +800,9 @@ def print_resist_3d(
         "pac": pac,
         "latent": latent,
         "remaining": remaining,
+        "field": field,
+        "level": level,
+        "feature": feature,
         "z": z,
     }
 
