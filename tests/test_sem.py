@@ -20,13 +20,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from litho_sim.metrology import (
     SEMConfig,
+    material_topdown_signal,
+    material_xsection_sem,
+    material_xsection_signal,
+    material_yields,
     measure_cd_sem,
+    stack_topdown_sem,
+    stack_xsection_sem,
     top_surface,
     topdown_sem,
     topdown_signal,
     xsection_sem,
     xsection_signal,
 )
+from litho_sim.metrology.sem import VACUUM_YIELD
+from litho_sim.wafer.materials import MATERIAL_LIBRARY, VACUUM, get_material
 
 PX = 4e-9
 FILM = 100e-9
@@ -242,6 +250,149 @@ def test_a_cross_section_outlines_every_boundary():
 def test_xsection_signal_validates_its_input():
     with pytest.raises(ValueError):
         xsection_signal(np.zeros(5, dtype=bool), PX, 2e-9, SEMConfig())
+
+
+# ---------------------------------------------------------------------------
+# Wafer stacks: material contrast
+# ---------------------------------------------------------------------------
+
+
+def _sharp() -> SEMConfig:
+    """No probe and no escape length, so a signal is exactly its terms."""
+    return SEMConfig(beam_fwhm=0.0, escape_length=0.0)
+
+
+SI, SIO2, TIN = (get_material(n).id for n in ("Si", "SiO2", "TiN"))
+
+
+def test_material_yields_follow_the_library():
+    lut = material_yields()
+    assert lut.shape == (256,)
+    assert lut[VACUUM] == VACUUM_YIELD
+    for m in MATERIAL_LIBRARY.values():
+        if m.id != VACUUM:
+            assert lut[m.id] == m.se_yield
+    assert lut[200] == 1.0, "an ID nothing registers reads as resist, not as a hole"
+    # The one number the resist path and the stack path share: silicon's
+    # yield is the substrate-yield default, so a floor images the same grey
+    # whichever way it arrived.
+    assert get_material("Si").se_yield == SEMConfig().substrate_yield
+    over = material_yields(overrides={"Si": 0.3})
+    assert over[SI] == 0.3 and over[SIO2] == lut[SIO2]
+
+
+def _layered_section(nz: int = 30, nx: int = 40) -> np.ndarray:
+    """Si under SiO2, a TiN block on top, vacuum above — row 0 at the bottom."""
+    ids = np.full((nz, nx), VACUUM, dtype=np.uint8)
+    ids[:10] = SI
+    ids[10:20] = SIO2
+    ids[20:26, 10:20] = TIN
+    return ids
+
+
+def test_a_cleaved_stack_shows_material_contrast_and_blooms_only_at_the_outline():
+    ids = _layered_section()
+    sig = material_xsection_signal(ids, PX, 2e-9, _sharp())
+    # Trimmed to the highest solid row plus a little vacuum: 26 rows of
+    # solid, and a tenth of that above.
+    assert sig.shape == (29, 40)
+    lut = material_yields()
+    # The bulk of each material is exactly its yield.
+    assert sig[5, 30] == pytest.approx(lut[SI])
+    assert sig[15, 30] == pytest.approx(lut[SIO2])
+    assert sig[22, 15] == pytest.approx(lut[TIN])
+    assert sig[28, 30] == pytest.approx(VACUUM_YIELD)
+    # A buried interface is a step in grey and nothing more.
+    assert sig[9, 30] == pytest.approx(lut[SI])
+    assert sig[10, 30] == pytest.approx(lut[SIO2])
+    # The outline of the solid blooms: the oxide's top under vacuum, the
+    # metal block's wall and top.
+    assert sig[19, 30] > lut[SIO2]
+    assert sig[22, 10] > lut[TIN] and sig[22, 9] > VACUUM_YIELD
+    assert sig[25, 15] > lut[TIN]
+
+
+def test_a_section_with_no_headroom_is_given_some():
+    ids = _layered_section(nz=26)          # solid to the very top row
+    sig = material_xsection_signal(ids, PX, 2e-9, _sharp())
+    assert sig.shape[0] > 26, "vacuum padded above so the top surface is an edge"
+    assert sig[25, 15] > material_yields()[TIN], "the top of the block blooms"
+    sem = material_xsection_sem(ids, PX, 2e-9, _sharp(), headroom=5)
+    assert sem.signal.shape == (31, 40)
+    assert sem.row_origin == 0.0 and sem.mode == "xsection"
+    with pytest.raises(ValueError):
+        material_xsection_signal(ids[0], PX, 2e-9, _sharp())
+
+
+def test_the_top_down_of_a_wafer_reads_the_top_material_and_its_steps():
+    ny, nx = 32, 48
+    ids = np.full((ny, nx), SIO2, dtype=np.uint8)
+    ids[:, 10:20] = TIN
+    flat = np.full((ny, nx), 100e-9)
+    lut = material_yields()
+    # Planarised: material contrast alone, no walls anywhere.
+    sig = material_topdown_signal(flat, ids, PX, _sharp())
+    assert np.allclose(sig[:, 5], lut[SIO2]) and np.allclose(sig[:, 15], lut[TIN])
+    # Raise the metal 20 nm and its walls bloom; the reference height is the
+    # tallest step present, so a full wall scores edge_yield split over the
+    # two pixels either side of it.
+    stepped = flat.copy()
+    stepped[:, 10:20] = 120e-9
+    cfg = _sharp()
+    sig = material_topdown_signal(stepped, ids, PX, cfg)
+    assert sig[16, 5] == pytest.approx(lut[SIO2])
+    assert sig[16, 15] == pytest.approx(lut[TIN])
+    assert sig[16, 10] == pytest.approx(lut[TIN] + 0.5 * cfg.edge_yield)
+    assert sig[16, 9] == pytest.approx(lut[SIO2] + 0.5 * cfg.edge_yield)
+    with pytest.raises(ValueError):
+        material_topdown_signal(flat, ids[:, :10], PX, cfg)
+
+
+def test_the_gaa_nanosheet_images_in_both_planes():
+    """The device the tab was built to look at.
+
+    Across the fin through the gate (a y–z cut) the sheets are silicon
+    wrapped in metal; along the channel (x–z) the interlayer oxide stands
+    either side of the gate trench. Every voxel images at its own material's
+    yield, whichever way the preset arrived — built, or loaded from a cache
+    written before materials carried a yield.
+    """
+    from litho_sim.tech.devices import build
+
+    stack, _label = build("gaa")
+    for m in stack.materials.values():
+        assert m.se_yield == get_material(m.id).se_yield
+    lut = material_yields(stack.materials.values())
+    cfg = _sharp()
+
+    across = stack.cross_section("x")
+    sem = stack_xsection_sem(stack, "x", None, cfg)
+    assert sem.mode == "xsection" and sem.row_origin == 0.0
+    nz = sem.signal.shape[0]
+    assert sem.signal.shape[1] == across.shape[1]
+    assert nz <= across.shape[0], "the stack's spare headroom is not imaged"
+    for mid in (SI, TIN, SIO2):
+        rows, cols = np.nonzero(across[:nz] == mid)
+        assert rows.size, f"the cut through the gate holds material {mid}"
+        # Deep inside the material, not on its outline, the signal is the
+        # yield itself. Take the interior voxels: every neighbour the same.
+        interior = [
+            (r, c) for r, c in zip(rows, cols)
+            if 0 < r < nz - 1 and 0 < c < across.shape[1] - 1
+            and (across[r - 1:r + 2, c - 1:c + 2] == mid).all()
+        ]
+        assert interior, f"material {mid} has an interior on the cut"
+        r, c = interior[len(interior) // 2]
+        assert sem.signal[r, c] == pytest.approx(lut[mid])
+
+    along = stack_xsection_sem(stack, "y", None, cfg)
+    assert along.signal.shape[1] == stack.cross_section("y").shape[1]
+    x0, _x1, z0, _z1 = along.extent_nm
+    assert x0 == 0.0 and z0 == 0.0
+
+    top = stack_topdown_sem(stack, cfg)
+    assert top.mode == "topdown" and top.signal.shape == stack.shape_xy
+    assert top.signal.min() >= min(lut[stack.top_material()].min(), 1.0) - 1e-9
 
 
 # ---------------------------------------------------------------------------

@@ -1234,6 +1234,7 @@ class Stack:
                     "opacity": v.opacity, "etch_rate": v.etch_rate, "role": v.role,
                     # complex is not JSON — store as a [re, im] pair
                     "n_index": [v.n_index.real, v.n_index.imag],
+                    "se_yield": v.se_yield,
                 }
                 for k, v in self.materials.items()
             },
@@ -1258,6 +1259,11 @@ class Stack:
                 # files written before n_index was persisted fall back to the
                 # dataclass default rather than failing to load
                 n_index=complex(*v["n_index"]) if "n_index" in v else 1.5 + 0j,
+                # Files written before the SE yield existed — every cached
+                # device preset — take the library's value for the same ID,
+                # so a loaded GAA images with the same contrast as a fresh
+                # one rather than as one flat grey.
+                se_yield=v.get("se_yield", _BY_ID.get(int(v["id"]), Material(0, "")).se_yield),
             )
             for k, v in meta["materials"].items()
         }

@@ -207,6 +207,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.simulate_tab.run_profile.connect(self._request_3d)
         self.stack_tab.run_requested.connect(self._request_flow)
         self.stack_tab.import_requested.connect(self._import_profile)
+        # The SEM images whatever step the Wafer Stack tab is showing — a
+        # loaded device, or a flow as it is built — without a run of its own.
+        self.stack_tab.shown.connect(self.sem_tab.set_stack)
         self.mode_2d.toggled.connect(self._on_mode_changed)
         self._build_menu()
 

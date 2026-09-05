@@ -33,6 +33,10 @@ class StackTab(QtWidgets.QWidget):
 
     run_requested = QtCore.Signal(object)      # FlowSession
     import_requested = QtCore.Signal()
+    #: ``(Stack, label)`` — the wafer the view is drawing, whole. Fires on
+    #: every scrub, load and finished run, so anything else that images the
+    #: wafer (the SEM tab) follows the step on screen.
+    shown = QtCore.Signal(object, str)
 
     def __init__(self, model: ParameterModel, parent=None):
         super().__init__(parent)
@@ -690,6 +694,11 @@ class StackTab(QtWidgets.QWidget):
             self._loaded_label if index < 0
             else self.session.steps[index].describe()
         )
+        # Whole, before the section: the SEM cleaves where it is told to,
+        # and a cut that had already moved the fin out of the middle would
+        # image the wrong place for the same reason the cross-section below
+        # is not cut.
+        self.shown.emit(stack, label)
         # The section is a 3-D decision, applied here rather than baked into
         # the wafers, and only in the solid view.
         #

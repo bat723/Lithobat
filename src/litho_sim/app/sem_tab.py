@@ -9,13 +9,15 @@ import numpy as np
 from litho_sim.app.compute import ImagingResult, Profile3DResult
 from litho_sim.app.controls import SpecForm
 from litho_sim.app.params import ParamSpec
-from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtWidgets
+from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
 from litho_sim.develop import measure_cd_2d
 from litho_sim.metrology import (
     SEMConfig,
     SEMImage,
     SEMMeasurement,
     measure_cd_sem,
+    stack_topdown_sem,
+    stack_xsection_sem,
     top_surface,
     topdown_sem,
     xsection_sem,
@@ -43,7 +45,9 @@ SEM_SPECS: tuple[ParamSpec, ...] = (
     ParamSpec("substrate_yield", "Substrate yield", "float", 0.6, 0.0, 1.5, 0.05,
               group="SEM", target="view", stage="view",
               help="Yield of the exposed substrate relative to the resist. "
-                   "Below 1 the developed floor reads dark."),
+                   "Below 1 the developed floor reads dark.\n\n"
+                   "On a wafer stack this is silicon's yield; every other "
+                   "material keeps the library's."),
     ParamSpec("electrons_per_pixel", "Electrons / px", "int", 100, 5, 2000, 5,
               group="SEM", target="view", stage="view",
               help="Primary electrons per pixel per frame. Shot noise goes as "
@@ -64,25 +68,42 @@ _XSECTION_ROWS = 48
 
 NO_PRINT = "Run Print on the Simulate tab, then come back to image it."
 NO_PROFILE = "Run 3-D resist profile on the Simulate tab to image the volume."
+NO_STACK = (
+    "Load a device or build a flow on the Wafer Stack tab, then come back "
+    "to image it."
+)
+
+#: The source combo's rows, in order.
+SOURCES = ("2-D print", "3-D profile", "Wafer stack")
+
+#: The cut combo's rows: ``(label, Stack.cross_section axis, axis across)``.
+#: ``axis="y"`` cuts at constant y and shows the x–z plane.
+CUTS = (("x–z plane", "y", "x"), ("y–z plane", "x", "y"))
 
 
 class SemTab(QtWidgets.QWidget):
-    """A CD-SEM pointed at the last print.
+    """A CD-SEM pointed at the last print — or at the wafer being built.
 
-    Top-down or cross-section, from the 2-D print or the 3-D profile. Live —
-    the instrument settings redraw the image as they move, because forming
-    an SEM image is a few milliseconds of numpy over a result already in hand
-    and the physics that produced the result is untouched. The readout
-    measures the CD off the image the way a tool does, from the edge peaks,
-    beside the CD the simulation reported: the difference is the measurement
-    bias the edge bloom introduces, and watching it move with the beam
-    width is the point of the tab.
+    Top-down or cross-section, from the 2-D print, the 3-D profile, or the
+    wafer stack. Live — the instrument settings redraw the image as they
+    move, because forming an SEM image is a few milliseconds of numpy over a
+    result already in hand and the physics that produced the result is
+    untouched. The readout measures the CD off the image the way a tool
+    does, from the edge peaks, beside the CD the simulation reported: the
+    difference is the measurement bias the edge bloom introduces, and
+    watching it move with the beam width is the point of the tab.
+
+    The wafer stack is the third source, and the one with a cut to choose:
+    a device is interesting in more than one plane — along a nanosheet's
+    channel and across it — so the cleave has a plane and a position, where
+    the prints have only the cut the profile already carries.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._print: ImagingResult | None = None
         self._profile: tuple[Profile3DResult, object] | None = None
+        self._stack: tuple[object, str] | None = None
         self._print_stale = False
         self._profile_stale = False
         self.last: SEMImage | None = None
@@ -96,11 +117,14 @@ class SemTab(QtWidgets.QWidget):
         view_box = QtWidgets.QGroupBox("Image")
         view_form = QtWidgets.QFormLayout(view_box)
         self.source = QtWidgets.QComboBox()
-        self.source.addItems(["2-D print", "3-D profile"])
+        self.source.addItems(list(SOURCES))
         self.source.setToolTip(
             "Which result to image. The 2-D print carries a thickness per "
             "column; the 3-D profile carries the developed volume, so its "
-            "cross-section can show an undercut the 2-D one cannot."
+            "cross-section can show an undercut the 2-D one cannot.\n\n"
+            "The wafer stack is whatever the Wafer Stack tab is showing — a "
+            "loaded device at the step you scrubbed to, or the flow you are "
+            "building — imaged with each material's own yield."
         )
         view_form.addRow("Result", self.source)
         modes = QtWidgets.QHBoxLayout()
@@ -111,6 +135,39 @@ class SemTab(QtWidgets.QWidget):
         modes.addWidget(self.mode_xs)
         modes.addStretch(1)
         view_form.addRow("View", modes)
+
+        # The cleave. Only the wafer stack has a choice to make here — a
+        # print's cross-section is the one cut its profile carries — so the
+        # row greys out for the other two sources rather than hiding, which
+        # would make the form jump.
+        cut = QtWidgets.QHBoxLayout()
+        self.cut_axis = QtWidgets.QComboBox()
+        self.cut_axis.addItems([c[0] for c in CUTS])
+        self.cut_axis.setToolTip(
+            "Which plane the cleave exposes. x–z cuts at constant y; y–z at "
+            "constant x.\n\n"
+            "On the GAA nanosheet the fin runs along x, so x–z at the centre "
+            "looks along the channel — source, spacers, gate, drain — and "
+            "y–z at the centre looks across it, through the gate: the "
+            "sheets stacked with the metal wrapped round them."
+        )
+        cut.addWidget(self.cut_axis)
+        self.cut_pos = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.cut_pos.setRange(0, 100)
+        self.cut_pos.setValue(50)
+        self.cut_pos.setToolTip(
+            "Where across the field the cleave lands, as a fraction of the "
+            "field. The centre is where a device preset puts its feature."
+        )
+        cut.addWidget(self.cut_pos, 1)
+        self.cut_label = QtWidgets.QLabel("50 %")
+        self.cut_label.setMinimumWidth(40)
+        cut.addWidget(self.cut_label)
+        self.cut_row = QtWidgets.QWidget()
+        self.cut_row.setLayout(cut)
+        cut.setContentsMargins(0, 0, 0, 0)
+        view_form.addRow("Cut", self.cut_row)
+
         self.feature = QtWidgets.QComboBox()
         self.feature.addItems(["line", "space"])
         self.feature.setToolTip(
@@ -158,9 +215,12 @@ class SemTab(QtWidgets.QWidget):
         outer.addLayout(right, 1)
 
         self.form.changed.connect(lambda _k: self.render())
-        self.source.currentIndexChanged.connect(lambda _i: self.render())
+        self.source.currentIndexChanged.connect(self._on_source_changed)
         self.feature.currentIndexChanged.connect(lambda _i: self.render())
         self.mode_top.toggled.connect(lambda _c: self.render())
+        self.cut_axis.currentIndexChanged.connect(lambda _i: self.render())
+        self.cut_pos.valueChanged.connect(self._on_cut_moved)
+        self._sync_cut_controls()
         self._placeholder(NO_PRINT)
 
     # -- inputs -------------------------------------------------------------
@@ -173,6 +233,16 @@ class SemTab(QtWidgets.QWidget):
         self._profile = (profile, grid)
         self._profile_stale = False
         self.render()
+
+    def set_stack(self, stack, label: str = "") -> None:
+        """The wafer the Wafer Stack tab is showing, whole.
+
+        Arrives on every scrub of that tab's step slider, so only the stack
+        source redraws for it — the prints are not what moved.
+        """
+        self._stack = (stack, str(label))
+        if self.from_stack:
+            self.render()
 
     def set_stale(self, print_stale: bool, profile_stale: bool) -> None:
         self._print_stale = print_stale
@@ -199,7 +269,38 @@ class SemTab(QtWidgets.QWidget):
     def from_profile(self) -> bool:
         return self.source.currentIndex() == 1
 
+    @property
+    def from_stack(self) -> bool:
+        return self.source.currentIndex() == 2
+
+    @property
+    def cut(self) -> tuple[str, int]:
+        """``(axis, index)`` for :meth:`Stack.cross_section` on the stack in hand."""
+        _label, axis, _across = CUTS[self.cut_axis.currentIndex()]
+        stack = self._stack[0] if self._stack is not None else None
+        if stack is None:
+            return axis, 0
+        ny, nx = stack.shape_xy
+        n = ny if axis == "y" else nx
+        return axis, int(round(self.cut_pos.value() / 100.0 * (n - 1)))
+
     # -- presentation -------------------------------------------------------
+    def _on_source_changed(self, _index: int) -> None:
+        self._sync_cut_controls()
+        self.render()
+
+    def _on_cut_moved(self, value: int) -> None:
+        self.cut_label.setText(f"{int(value)} %")
+        self.render()
+
+    def _sync_cut_controls(self) -> None:
+        self.cut_row.setEnabled(self.from_stack)
+
+    def _missing(self) -> str:
+        if self.from_stack:
+            return NO_STACK
+        return NO_PROFILE if self.from_profile else NO_PRINT
+
     def _placeholder(self, text: str) -> None:
         self.figure.clf()
         self.figure.text(0.5, 0.5, text, ha="center", va="center",
@@ -210,18 +311,23 @@ class SemTab(QtWidgets.QWidget):
         self.measurement = None
 
     def _refresh_banner(self) -> None:
-        stale = self._profile_stale if self.from_profile else self._print_stale
-        has = self._profile is not None if self.from_profile else self._print is not None
-        text = (
-            "Imaging a result that is out of date — the settings moved after "
-            "it was computed. Run it again on the Simulate tab."
-            if has and stale else ""
-        )
+        # The stack is never stale: it is whatever is on the Wafer Stack tab
+        # right now, and that tab dates itself.
+        if self.from_stack:
+            text = ""
+        else:
+            stale = self._profile_stale if self.from_profile else self._print_stale
+            has = self._profile is not None if self.from_profile else self._print is not None
+            text = (
+                "Imaging a result that is out of date — the settings moved after "
+                "it was computed. Run it again on the Simulate tab."
+                if has and stale else ""
+            )
         self.banner.setText(text)
         self.banner.setVisible(bool(text))
 
     def _topdown_input(self):
-        """``(height, pixel_size, film)`` for the chosen result."""
+        """``(height, pixel_size, film)`` for the chosen resist result."""
         if self.from_profile:
             if self._profile is None:
                 return None
@@ -253,7 +359,7 @@ class SemTab(QtWidgets.QWidget):
         return float(cd) * 1e9
 
     def _xsection_input(self):
-        """``(slice, pixel_size, dz)`` for the chosen result."""
+        """``(slice, pixel_size, dz)`` for the chosen resist result."""
         if self.from_profile:
             if self._profile is None:
                 return None
@@ -275,30 +381,78 @@ class SemTab(QtWidgets.QWidget):
         """Form the image from the chosen result and the instrument settings."""
         cfg = self.config()
         self._refresh_banner()
+        if self.from_stack:
+            self._render_stack(cfg)
+            return
+        src = "3-D profile" if self.from_profile else "2-D print"
         if self.mode == "topdown":
             inp = self._topdown_input()
             if inp is None:
-                self._placeholder(NO_PROFILE if self.from_profile else NO_PRINT)
+                self._placeholder(self._missing())
                 return
             height, px, film = inp
             feature = self.feature.currentText()
             sem = topdown_sem(height, px, cfg, film_thickness=film)
             meas = measure_cd_sem(sem.image, px, feature=feature)
-            self._draw_topdown(sem, meas, self._half_height_cd(height, px, film, feature))
+            self._draw_topdown(
+                sem, meas, self._half_height_cd(height, px, film, feature), src,
+            )
         else:
             inp = self._xsection_input()
             if inp is None:
-                self._placeholder(NO_PROFILE if self.from_profile else NO_PRINT)
+                self._placeholder(self._missing())
                 return
             slab, px, dz = inp
             sem = xsection_sem(slab, px, dz, cfg)
             meas = None
-            self._draw_xsection(sem)
+            self._draw_xsection(sem, src, across="x", floor="film bottom")
+        self.last = sem
+        self.measurement = meas
+
+    def _render_stack(self, cfg: SEMConfig) -> None:
+        """The wafer stack: material contrast from the library, silicon
+        from the knob, the cleave from the Cut row."""
+        if self._stack is None:
+            self._placeholder(self._missing())
+            return
+        stack, label = self._stack
+        src = f"wafer stack — {label}" if label else "wafer stack"
+        # The one knob that names a material maps onto the one material a
+        # wafer always has; the rest read their yield off the library.
+        overrides = {"Si": cfg.substrate_yield}
+        if self.mode == "topdown":
+            feature = self.feature.currentText()
+            sem = stack_topdown_sem(stack, cfg, overrides=overrides)
+            meas = measure_cd_sem(sem.image, sem.pixel_size, feature=feature)
+            self._draw_topdown(sem, meas, None, src)
+            self.notes.setText(
+                "Looking down on the wafer as it stands: each column shows "
+                "the yield of whatever is on top, and the walls between "
+                "columns bloom. A planarised wafer has no walls and images "
+                "as material contrast alone."
+            )
+        else:
+            axis, index = self.cut
+            plane, _axis, across = CUTS[self.cut_axis.currentIndex()]
+            pos_nm = index * float(stack.grid.pixel_size) * 1e9
+            sem = stack_xsection_sem(stack, axis, index, cfg, overrides=overrides)
+            meas = None
+            self._draw_xsection(
+                sem, f"{src}, {plane} at {axis} = {pos_nm:.0f} nm",
+                across=across, floor="substrate bottom",
+            )
+            self.notes.setText(
+                "The cleaved face of the wafer stack. Each material sits at "
+                "its own grey — oxides and nitrides bright, silicon dark, "
+                "the metal between — and the outline of the solid blooms. "
+                "A buried interface is a step in grey and nothing more: on "
+                "a flat face it has no sidewall to emit from."
+            )
         self.last = sem
         self.measurement = meas
 
     def _draw_topdown(self, sem: SEMImage, meas: SEMMeasurement,
-                      sim_cd_nm: float | None) -> None:
+                      sim_cd_nm: float | None, src: str) -> None:
         fig = self.figure
         fig.clf()
         gs = fig.add_gridspec(2, 1, height_ratios=[3.0, 1.2])
@@ -311,7 +465,6 @@ class SemTab(QtWidgets.QWidget):
                   vmin=0.0, vmax=max(vmax, 1e-6), interpolation="nearest")
         ax.set_xlabel("x [nm]")
         ax.set_ylabel("y [nm]")
-        src = "3-D profile" if self.from_profile else "2-D print"
         ax.set_title(
             f"top-down SEM of the {src} — {sem.electrons:.0f} e⁻/px, "
             f"SNR {sem.snr:.1f}",
@@ -335,19 +488,21 @@ class SemTab(QtWidgets.QWidget):
 
         if meas.found:
             text = f"SEM CD ({meas.feature}, peak-to-peak)  {meas.cd * 1e9:6.1f} nm"
-            if np.isfinite(sim_cd_nm) and sim_cd_nm > 0:
+            if sim_cd_nm is not None and np.isfinite(sim_cd_nm) and sim_cd_nm > 0:
                 text += (f"    profile at half height {sim_cd_nm:6.1f} nm"
                          f"    Δ {meas.cd * 1e9 - sim_cd_nm:+.1f} nm")
         else:
             text = f"no {meas.feature} found between edge peaks"
         self.readout.setText(text)
-        self.notes.setText(
-            "The edge bloom is what the tool measures from. Widen the beam or "
-            "the escape length and watch the measured CD drift from the "
-            "simulated one — that is the metrology bias."
-        )
+        if sim_cd_nm is not None:
+            self.notes.setText(
+                "The edge bloom is what the tool measures from. Widen the beam or "
+                "the escape length and watch the measured CD drift from the "
+                "simulated one — that is the metrology bias."
+            )
 
-    def _draw_xsection(self, sem: SEMImage) -> None:
+    def _draw_xsection(self, sem: SEMImage, src: str, across: str,
+                       floor: str) -> None:
         fig = self.figure
         fig.clf()
         ax = fig.add_subplot(111)
@@ -356,9 +511,8 @@ class SemTab(QtWidgets.QWidget):
         ax.imshow(sem.image, origin="lower", cmap="gray", extent=(x0, x1, y0, y1),
                   vmin=0.0, vmax=max(vmax, 1e-6), aspect="auto",
                   interpolation="nearest")
-        ax.set_xlabel("x [nm]")
-        ax.set_ylabel("z [nm]  (film bottom at 0)")
-        src = "3-D profile" if self.from_profile else "2-D print"
+        ax.set_xlabel(f"{across} [nm]")
+        ax.set_ylabel(f"z [nm]  ({floor} at 0)")
         ax.set_title(
             f"cross-section SEM of the {src} — {sem.electrons:.0f} e⁻/px, "
             f"SNR {sem.snr:.1f}",
@@ -366,8 +520,9 @@ class SemTab(QtWidgets.QWidget):
         )
         self.canvas.draw_idle()
         self.readout.setText("")
-        self.notes.setText(
-            "The cleaved face: material contrast in the bulk, bloom along "
-            "every boundary the cleave cuts. From the 3-D profile an undercut "
-            "or a T-top shows here; the 2-D print has no way to make one."
-        )
+        if not self.from_stack:
+            self.notes.setText(
+                "The cleaved face: material contrast in the bulk, bloom along "
+                "every boundary the cleave cuts. From the 3-D profile an undercut "
+                "or a T-top shows here; the 2-D print has no way to make one."
+            )

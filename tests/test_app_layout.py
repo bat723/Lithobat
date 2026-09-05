@@ -536,3 +536,80 @@ def test_the_wheel_still_adjusts_a_focused_control(monkeypatch):
         assert slider.value() != before
     finally:
         win.close()
+
+
+# ---------------------------------------------------------------------------
+# The SEM images the wafer stack
+# ---------------------------------------------------------------------------
+
+
+@needs_qt
+def test_the_sem_tab_images_the_wafer_stack_at_the_step_on_screen(monkeypatch):
+    """A device loaded on the Wafer Stack tab can be imaged on the SEM tab.
+
+    The third source. It follows whatever that tab is showing, it has a
+    cut to choose where the prints do not, and it is never stale — it is
+    the wafer as it stands, not a result the settings could move past.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from matplotlib.backends.qt_compat import QtWidgets
+
+    from litho_sim.app.main import MainWindow
+    from litho_sim.wafer import Stack
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = MainWindow()
+    try:
+        win.model.set("n_pixels", 48)
+        grid = win.model.grid()
+        wafer = Stack.blank(grid, dz=4e-9, substrate_thickness=40e-9, headroom=200e-9)
+        wafer.deposit_blanket("SiO2", 40e-9)
+        tab = win.sem_tab
+
+        assert tab.last is None, "nothing to image before anything ran"
+        assert not tab.cut_row.isEnabled(), "a print has no cut to choose"
+
+        win.stack_tab.load_stack(wafer, label="test wafer", downsample=1)
+        assert tab.last is None, "the print source does not redraw for a wafer"
+        tab.source.setCurrentIndex(2)
+        assert tab.cut_row.isEnabled()
+        assert tab.last is not None and tab.last.mode == "topdown"
+        assert "wafer stack" in tab.figure.axes[0].get_title()
+        assert "test wafer" in tab.figure.axes[0].get_title()
+
+        tab.mode_xs.setChecked(True)
+        assert tab.last.mode == "xsection"
+        assert tab.last.row_origin == 0.0, "z runs up from the substrate's underside"
+        assert tab.figure.axes[0].get_xlabel().startswith("x")
+        n_rows = tab.last.image.shape[0]
+        assert n_rows * 4 < 200 + 40, "the stack's spare headroom is not imaged"
+
+        # The cleave has a plane and a position.
+        tab.cut_axis.setCurrentIndex(1)
+        assert tab.figure.axes[0].get_xlabel().startswith("y")
+        assert tab.cut == ("x", 24)
+        tab.cut_pos.setValue(10)
+        assert tab.cut_label.text() == "10 %"
+        assert tab.cut == ("x", round(0.1 * 47))
+        assert "x = " in tab.figure.axes[0].get_title()
+
+        # Never stale: dating the prints leaves the stack's banner down.
+        tab.set_stale(True, True)
+        assert tab.banner.isHidden()
+        tab.source.setCurrentIndex(0)
+        assert not tab.cut_row.isEnabled()
+
+        # It follows the Wafer Stack tab: whatever that tab shows next is
+        # what this one images.
+        tab.source.setCurrentIndex(2)
+        before = tab.last.image.copy()
+        taller = Stack.blank(grid, dz=4e-9, substrate_thickness=40e-9, headroom=200e-9)
+        taller.deposit_blanket("SiO2", 40e-9)
+        taller.deposit_blanket("TiN", 20e-9)
+        win.stack_tab.load_stack(taller, label="with metal", downsample=1)
+        assert "with metal" in tab.figure.axes[0].get_title()
+        assert tab.last.image.shape != before.shape or not np.array_equal(tab.last.image, before)
+    finally:
+        win.thread.quit()
+        win.thread.wait(2000)
+        win.close()

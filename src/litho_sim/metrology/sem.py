@@ -32,6 +32,17 @@ they look — and :func:`measure_cd_sem` measures the CD back from the image
 the way a tool does, by finding the edge peaks. Comparing that number with
 the simulation's own CD shows the measurement bias the edge bloom introduces.
 
+**Wafer stacks.** The same three terms image a multi-material wafer — a
+device out of the process-flow engine rather than a resist print. Material
+contrast comes from each :class:`~litho_sim.wafer.materials.Material`'s
+``se_yield`` instead of the one ``substrate_yield`` ratio, so a cleaved
+nanosheet stack shows its oxides bright, its silicon dark and its metal gate
+between; edge bloom stays where the topography is, at solid/vacuum
+boundaries, because a buried interface on a flat cleaved face has no
+sidewall to emit from. :func:`stack_xsection_sem` and
+:func:`stack_topdown_sem` take a :class:`~litho_sim.wafer.stack.Stack`
+directly; the ``material_*`` functions under them take arrays.
+
 All lengths are metres, all images ``(rows, cols)`` with ``origin="lower"``
 conventions; signals are in secondary electrons per primary, normalised so
 the flat resist top emits 1.
@@ -39,17 +50,28 @@ the flat resist top emits 1.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from scipy.signal import find_peaks
 
+from litho_sim.wafer.materials import MATERIAL_LIBRARY, VACUUM, Material, get_material
+
+if TYPE_CHECKING:
+    from litho_sim.wafer.stack import Stack
+
 __all__ = [
     "SEMConfig", "SEMImage", "SEMMeasurement",
     "measure_cd_sem", "top_surface",
     "topdown_sem", "topdown_signal", "xsection_sem", "xsection_signal",
+    "material_yields",
+    "material_topdown_sem", "material_topdown_signal",
+    "material_xsection_sem", "material_xsection_signal",
+    "stack_topdown_sem", "stack_xsection_sem",
 ]
 
 #: Gaussian FWHM → σ.
@@ -215,13 +237,31 @@ def topdown_signal(
         raise ValueError(f"height must be (ny, nx), got shape {h.shape}")
     h_ref = float(film_thickness) if film_thickness else float(max(h.max(), 1e-12))
     lam = max(float(cfg.escape_length), 1e-12)
-    px = float(pixel_size)
 
     # Which material the beam lands on. Soft over the escape length so a
     # few-nanometre remnant reads as partly substrate, as it would.
     base = cfg.substrate_yield + (1.0 - cfg.substrate_yield) * (1.0 - np.exp(-h / lam))
+    return _topdown_from(base, h, h_ref, pixel_size, cfg)
 
-    # Sidewall crossed by each pixel, in units of the full film height, then
+
+def _topdown_from(
+    base: NDArray[np.float64],
+    h: NDArray[np.float64],
+    h_ref: float,
+    pixel_size: float,
+    cfg: SEMConfig,
+) -> NDArray[np.float64]:
+    """Edge bloom over a base-yield map, then the probe.
+
+    The part of a top-down image that does not care what the surface is
+    made of: *base* says what each pixel emits flat, *h* says where the
+    walls are. The resist path and the wafer-stack path differ only in how
+    they arrive at *base*.
+    """
+    lam = max(float(cfg.escape_length), 1e-12)
+    px = float(pixel_size)
+
+    # Sidewall crossed by each pixel, in units of the reference height, then
     # spread over the distance SEs travel out of the wall.
     wall = np.hypot(_central_diff(h, 1, True), _central_diff(h, 0, True)) / h_ref
     if cfg.escape_length > 0:
@@ -272,7 +312,20 @@ def xsection_signal(
     mat[:sub] = cfg.substrate_yield
     film = mat[sub:sub + nz]
     film[m] = 1.0
+    return _xsection_from(mat, pixel_size, dz, cfg)
 
+
+def _xsection_from(
+    mat: NDArray[np.float64], pixel_size: float, dz: float, cfg: SEMConfig
+) -> NDArray[np.float64]:
+    """Bloom along the solid/vacuum outline of a yield map, then the probe.
+
+    *mat* is what each pixel of the cleaved face emits flat; anything above
+    :data:`VACUUM_YIELD` is solid. Only the outline of the solid blooms — a
+    boundary between two solids on a flat face has no sidewall, so it shows
+    as a step in grey and nothing more. Periodic across, clamped up and
+    down, as the face is.
+    """
     solid = (mat > VACUUM_YIELD).astype(np.float64)
     edge = np.hypot(_central_diff(solid, 1, True), _central_diff(solid, 0, False))
 
@@ -341,6 +394,229 @@ def xsection_sem(
         pixel_size=float(pixel_size), row_size=float(dz),
         mode="xsection", electrons=cfg.electrons,
         row_origin=-sub * float(dz),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wafer stacks: material contrast
+# ---------------------------------------------------------------------------
+
+
+def material_yields(
+    materials: Iterable[Material] | None = None,
+    overrides: Mapping[str | int | Material, float] | None = None,
+) -> NDArray[np.float64]:
+    """A 256-entry lookup from material ID to SE yield.
+
+    ``lut[stack.mat]`` turns a voxel array into what each voxel would emit.
+    Vacuum is :data:`VACUUM_YIELD`; every registered material carries its own
+    ``se_yield``; an ID nothing registers reads as the resist top, 1, rather
+    than as vacuum — a phantom hole would grow a phantom bloom around it.
+
+    Parameters
+    ----------
+    materials : iterable of Material, optional
+        The library to read. Defaults to the built-in one; a
+        :class:`~litho_sim.wafer.stack.Stack` passes its own
+        ``materials.values()`` so a user-registered film is honoured.
+    overrides : mapping, optional
+        ``{material: yield}`` applied last. The app maps its *Substrate
+        yield* knob onto silicon this way.
+    """
+    lut = np.ones(256, dtype=np.float64)
+    lut[VACUUM] = VACUUM_YIELD
+    for m in (MATERIAL_LIBRARY.values() if materials is None else materials):
+        if m.id != VACUUM:
+            lut[m.id] = float(m.se_yield)
+    for ref, y in (overrides or {}).items():
+        lut[get_material(ref).id] = float(y)
+    return lut
+
+
+def material_topdown_signal(
+    height: NDArray[np.float64],
+    top_ids: NDArray[np.uint8],
+    pixel_size: float,
+    cfg: SEMConfig,
+    yields: NDArray[np.float64] | None = None,
+    height_ref: float | None = None,
+) -> NDArray[np.float64]:
+    """The noiseless top-down SE signal from a wafer's top surface.
+
+    Parameters
+    ----------
+    height : (ny, nx)
+        Height of the top surface per column [m] — :meth:`Stack.top_height`.
+    top_ids : (ny, nx)
+        Material ID exposed at the top of each column —
+        :meth:`Stack.top_material`. What the beam lands on.
+    pixel_size : float
+        Column pitch [m]; the field is taken as periodic.
+    cfg : SEMConfig
+    yields : (256,), optional
+        Yield per material ID, from :func:`material_yields`. Defaults to the
+        built-in library.
+    height_ref : float, optional
+        The wall height that scores exactly ``edge_yield``. A resist print
+        has a natural one — the film thickness — and a wafer does not, so
+        this defaults to the tallest step on the wafer: the largest wall in
+        view is as bright as a full-height resist wall would be. Pass the
+        same reference across a sequence of steps to keep them comparable.
+
+    A planarised wafer has no walls at all, and images as material contrast
+    alone — which is what a top-down of a finished device looks like.
+    """
+    h = np.asarray(height, dtype=np.float64)
+    ids = np.asarray(top_ids)
+    if h.ndim != 2 or ids.shape != h.shape:
+        raise ValueError(
+            f"height and top_ids must both be (ny, nx), got {h.shape} and {ids.shape}"
+        )
+    lut = material_yields() if yields is None else np.asarray(yields, dtype=np.float64)
+    base = lut[ids.astype(np.intp)]
+    if height_ref is None:
+        height_ref = float(h.max() - h.min())
+    h_ref = max(float(height_ref), 1e-12)
+    return _topdown_from(base, h, h_ref, pixel_size, cfg)
+
+
+def material_topdown_sem(
+    height: NDArray[np.float64],
+    top_ids: NDArray[np.uint8],
+    pixel_size: float,
+    cfg: SEMConfig | None = None,
+    yields: NDArray[np.float64] | None = None,
+    height_ref: float | None = None,
+    rng: np.random.Generator | None = None,
+) -> SEMImage:
+    """A top-down SEM frame of a wafer's top surface. See
+    :func:`material_topdown_signal`."""
+    cfg = cfg or SEMConfig()
+    signal = material_topdown_signal(height, top_ids, pixel_size, cfg, yields, height_ref)
+    return SEMImage(
+        image=_sample(signal, cfg, rng), signal=signal,
+        pixel_size=float(pixel_size), row_size=float(pixel_size),
+        mode="topdown", electrons=cfg.electrons,
+    )
+
+
+def _trim_headroom(ids: NDArray, headroom: int | None) -> NDArray:
+    """Cut a section down to its solid plus a little vacuum above.
+
+    A process stack carries whatever headroom its deposits needed — often
+    more than the device is tall — and imaging all of it squashes the films
+    into the bottom of the frame. Keep the rows up to the highest solid one
+    and :func:`_vacuum_rows` above that (or *headroom* rows, if given),
+    padding with vacuum when the stack is shorter than that.
+    """
+    nz = ids.shape[0]
+    solid_rows = np.nonzero((ids != VACUUM).any(axis=1))[0]
+    top = int(solid_rows[-1]) + 1 if solid_rows.size else nz
+    vac = _vacuum_rows(top) if headroom is None else max(int(headroom), 0)
+    want = top + vac
+    if want <= nz:
+        return ids[:want]
+    pad = np.full((want - nz, ids.shape[1]), VACUUM, dtype=ids.dtype)
+    return np.concatenate([ids, pad], axis=0)
+
+
+def material_xsection_signal(
+    section: NDArray[np.uint8],
+    pixel_size: float,
+    dz: float,
+    cfg: SEMConfig,
+    yields: NDArray[np.float64] | None = None,
+    headroom: int | None = None,
+) -> NDArray[np.float64]:
+    """The noiseless SE signal from a cleaved multi-material face.
+
+    Parameters
+    ----------
+    section : (nz, n)
+        Material IDs on the cut plane, row 0 at the bottom of the wafer —
+        :meth:`Stack.cross_section`. The substrate is part of it, so no
+        substrate rows are invented under it the way :func:`xsection_signal`
+        does for a bare resist slice.
+    pixel_size, dz : float
+        Column and row pitch [m].
+    cfg : SEMConfig
+    yields : (256,), optional
+        Yield per material ID, from :func:`material_yields`.
+    headroom : int, optional
+        Vacuum rows drawn above the highest solid. Defaults to a tenth of
+        the solid's height; the stack's own headroom beyond that is cut off.
+
+    Material contrast in the bulk, bloom along the solid's outline — top
+    surface, trench walls, a released sheet's underside — and none at a
+    buried interface, which on a flat face has nothing to emit from.
+    """
+    ids = np.asarray(section)
+    if ids.ndim != 2:
+        raise ValueError(f"section must be (nz, n), got shape {ids.shape}")
+    ids = _trim_headroom(ids, headroom)
+    lut = material_yields() if yields is None else np.asarray(yields, dtype=np.float64)
+    mat = lut[ids.astype(np.intp)]
+    return _xsection_from(mat, pixel_size, dz, cfg)
+
+
+def material_xsection_sem(
+    section: NDArray[np.uint8],
+    pixel_size: float,
+    dz: float,
+    cfg: SEMConfig | None = None,
+    yields: NDArray[np.float64] | None = None,
+    headroom: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> SEMImage:
+    """A cross-section SEM frame of a cleaved multi-material face. See
+    :func:`material_xsection_signal`. Row 0 is the bottom of the wafer, so
+    the extent's z runs up from the substrate's underside."""
+    cfg = cfg or SEMConfig()
+    signal = material_xsection_signal(section, pixel_size, dz, cfg, yields, headroom)
+    return SEMImage(
+        image=_sample(signal, cfg, rng), signal=signal,
+        pixel_size=float(pixel_size), row_size=float(dz),
+        mode="xsection", electrons=cfg.electrons, row_origin=0.0,
+    )
+
+
+def stack_xsection_sem(
+    stack: Stack,
+    axis: str = "y",
+    index: int | None = None,
+    cfg: SEMConfig | None = None,
+    overrides: Mapping[str | int | Material, float] | None = None,
+    headroom: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> SEMImage:
+    """Cleave a wafer stack and image the face.
+
+    ``axis="y"`` cuts at constant y and shows the x–z plane, ``"x"`` the
+    y–z plane — :meth:`Stack.cross_section`'s convention — at *index*, or
+    the centre. Yields come from the stack's own material table, with
+    *overrides* applied on top.
+    """
+    lut = material_yields(stack.materials.values(), overrides)
+    section = stack.cross_section(axis, index)
+    return material_xsection_sem(
+        section, float(stack.grid.pixel_size), float(stack.dz), cfg,
+        yields=lut, headroom=headroom, rng=rng,
+    )
+
+
+def stack_topdown_sem(
+    stack: Stack,
+    cfg: SEMConfig | None = None,
+    overrides: Mapping[str | int | Material, float] | None = None,
+    height_ref: float | None = None,
+    rng: np.random.Generator | None = None,
+) -> SEMImage:
+    """Look down on a wafer stack: the top material of every column, and
+    the walls between them. See :func:`material_topdown_signal`."""
+    lut = material_yields(stack.materials.values(), overrides)
+    return material_topdown_sem(
+        stack.top_height(), stack.top_material(), float(stack.grid.pixel_size),
+        cfg, yields=lut, height_ref=height_ref, rng=rng,
     )
 
 

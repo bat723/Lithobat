@@ -203,6 +203,36 @@ def test_saved_stack_records_resolve_to_equal_materials(grid, tmp_path):
     # The volume still means the same films, resolved through the library.
     present = {m.name for m in back.present_materials()}
     assert present == {"Si", "photoresist", "spacer-oxide"}
+
+
+def test_a_stack_saved_before_materials_had_a_yield_takes_the_library_value(grid, tmp_path):
+    """Every cached device preset predates ``se_yield``.
+
+    Loading one must not hand every material the dataclass default of 1 —
+    a GAA that images as one flat grey — but the library's yield for the
+    same ID, which is what the record would have carried had the field
+    existed when it was written.
+    """
+    import json
+
+    st = Stack.blank(grid, dz=4e-9, substrate_thickness=16e-9, headroom=60e-9)
+    st.deposit_blanket("SiO2", 12e-9)
+    path = tmp_path / "old.npz"
+    st.save(path)
+
+    # Rewrite the file the way an older version wrote it: no se_yield key.
+    data = np.load(path, allow_pickle=False)
+    meta = json.loads(str(data["meta"]))
+    for rec in meta["materials"].values():
+        assert rec.pop("se_yield") is not None, "premise: the new file carries it"
+    extra = {k: data[k] for k in data.files if k not in ("mat", "meta")}
+    np.savez_compressed(path, mat=data["mat"], meta=json.dumps(meta), **extra)
+
+    back = Stack.load(path)
+    assert back.materials == st.materials
+    assert back.materials[get_material("SiO2").id].se_yield == get_material("SiO2").se_yield
+    assert back.materials[get_material("Si").id].se_yield == get_material("Si").se_yield
+    assert get_material("SiO2").se_yield != 1.0, "premise: the library value is not the default"
     for i in np.unique(back.mat):
         if int(i) != VACUUM:
             assert get_material(i) == back.materials[int(i)]
