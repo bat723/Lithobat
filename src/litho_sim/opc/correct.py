@@ -180,6 +180,7 @@ def run_opc(
     min_space: float | None = None,
     search: float | None = None,
     keep: str = "best",
+    clip: tuple[float, float, float, float] | None = None,
     progress: Callable[[int, float], None] | None = None,
 ) -> OPCResult:
     """Correct a layout so it prints as drawn under *model*.
@@ -249,6 +250,14 @@ def run_opc(
         then the smallest worst-case |EPE| — the loop is not monotone
         once fragments sit on a cap, and the mask worth keeping is the
         best one it saw. ``"last"`` returns the final iterate.
+    clip : (x0, y0, x1, y1), optional
+        The imaged field [m]. Fragments whose control point lies outside
+        it are held fixed — not measured, not moved — so a shape that
+        runs out of the field is corrected only where it is imaged. The
+        imaging is periodic, and without this a line drawn through the
+        whole field reads its window edges as line ends. The layout is
+        rasterised on the model's grid regardless; this only says which
+        fragments the loop owns.
     progress : callable, optional
         Called ``progress(iteration, max_abs_epe_nm)`` after each print.
 
@@ -271,19 +280,25 @@ def run_opc(
 
     targets = layout.shapes if layer is None else layout.on_layer(layer)
     _warn_if_touching(targets)
-    fragmented = fragment_layout(layout, frag_len, corner, layer=layer, corner_radius=radius)
+    fragmented = fragment_layout(
+        layout, frag_len, corner, layer=layer, corner_radius=radius, clip=clip
+    )
     untouched = [] if layer is None else [s for s in layout.shapes if s.layer != layer]
     n_frag = sum(len(fs) for fs in fragmented)
+    held = np.array([f.fixed for fs in fragmented for f in fs.fragments], dtype=bool)
 
     # Mask rule check, from the drawn geometry once: each fragment's share of
-    # the space in front of it and of the width behind it.
+    # the space in front of it and of the width behind it. A held fragment's
+    # share is nothing: it stays where it was drawn.
     space = facing_distances(fragmented, +1.0)
     width = facing_distances(fragmented, -1.0)
     hi = np.minimum(total_cap, np.maximum(0.5 * (space - rule), 0.0))
     lo = -np.minimum(total_cap, np.maximum(0.5 * (width - rule), 0.0))
+    hi[held] = 0.0
+    lo[held] = 0.0
     logger.info(
-        "OPC: %d shapes, %d fragments (%.1f nm), tol %.2f nm, up to %d iterations",
-        len(fragmented), n_frag, frag_len * 1e9, tol * 1e9, max_iter,
+        "OPC: %d shapes, %d fragments (%.1f nm, %d held), tol %.2f nm, up to %d iterations",
+        len(fragmented), n_frag, frag_len * 1e9, int(held.sum()), tol * 1e9, max_iter,
     )
 
     def current() -> Layout:
@@ -344,7 +359,8 @@ def run_opc(
         if progress is not None:
             progress(it, epe.max_abs * 1e9)
 
-        if epe.n_failed == 0 and bool(np.all(np.abs(epe.values) < tolerances)):
+        ok = epe.ok
+        if epe.n_failed == 0 and bool(np.all(np.abs(epe.values[ok]) < tolerances[ok])):
             converged = True
             break
         if it == max_iter:
@@ -371,6 +387,7 @@ def run_opc(
                 move[i] = +step_cap
             elif st == "merged":
                 move[i] = -step_cap
+        move[held] = 0.0
         move = np.clip(move, -step_cap, step_cap)
         k = 0
         for fs in fragmented:
@@ -413,7 +430,7 @@ def run_opc(
             corner_radius=radius, corner_tol=tol_corner, gain=gain, adaptive=adaptive,
             keep=keep, max_step=step_cap,
             max_offset=total_cap, min_space=rule, search=reach, layer=layer,
-            dose=model.dose, tone=model.tone, model=model.model,
+            clip=clip, dose=model.dose, tone=model.tone, model=model.model,
         ),
     )
     logger.info(
@@ -457,6 +474,7 @@ def verify(
     corner_length: float | None = None,
     corner_radius: float | None = None,
     search: float | None = None,
+    clip: tuple[float, float, float, float] | None = None,
 ) -> tuple[PrintedImage, EPE, list[FragmentedShape]]:
     """Print a layout once and measure its EPE — OPC's step 2 and 3 with no step 4.
 
@@ -464,13 +482,15 @@ def verify(
     for checking a corrected layout at a *different* condition from the one
     it was corrected at — through focus, at the edges of the dose window —
     which is where a correction shows whether it was robust or merely
-    exact.
+    exact. *clip* is the imaged field, as for :func:`run_opc`.
     """
     frag_len = fragment_length if fragment_length is not None else default_fragment_length(model)
     corner = corner_length if corner_length is not None else 0.5 * frag_len
     reach = search if search is not None else 2.0 * frag_len
     radius = corner_radius if corner_radius is not None else frag_len
-    fragmented = fragment_layout(layout, frag_len, corner, layer=layer, corner_radius=radius)
+    fragmented = fragment_layout(
+        layout, frag_len, corner, layer=layer, corner_radius=radius, clip=clip
+    )
     printed = model.print(layout)
     return printed, measure_epe(printed, fragmented, reach), fragmented
 

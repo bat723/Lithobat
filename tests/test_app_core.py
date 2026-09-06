@@ -1924,3 +1924,278 @@ def test_process_window_tab_runs_a_sweep_offscreen():
         win.thread.quit()
         win.thread.wait(2000)
         win.close()
+
+
+# ---------------------------------------------------------------------------
+# OPC in the app
+# ---------------------------------------------------------------------------
+
+from litho_sim.app.compute import mask_preview, source_preview  # noqa: E402
+from litho_sim.app.opc import (  # noqa: E402
+    app_layout,
+    compute_opc,
+    correction_window,
+    dose_to_size,
+    field_box,
+    mask_from_layout,
+    opc_availability,
+    opc_summary,
+    print_model,
+)
+from litho_sim.app.params import mask_model_availability, tab_of  # noqa: E402
+
+
+def _opc_model(pattern: str = "line ends") -> ParameterModel:
+    """A process that prints the design near size, on a field the loop can
+    judge, fast: the guard band takes two search reaches off a 384 nm field."""
+    m = ParameterModel()
+    m.set("n_pixels", 96)
+    m.set("source_grid", 9)
+    m.set("normalisation", "clear")
+    m.set("pattern", pattern)
+    m.set("opc_iterations", 6)
+    m.set("dose", dose_to_size(m))
+    return m
+
+
+@pytest.mark.parametrize("pattern", PATTERNS)
+def test_the_vector_layout_is_the_pixel_pattern(pattern):
+    """Every pattern drawn as geometry lands where the pixel builder puts it.
+
+    The builders sample pixel centres, which puts their edges half a pixel
+    from the geometry's; the anti-aliased raster of the layout therefore
+    differs from theirs by at most half a pixel's coverage along any row
+    or column, and by under two per cent in area.
+    """
+    p = ParameterModel()
+    p.set("pattern", pattern)
+    a = build_mask(p).real
+    v = mask_from_layout(app_layout(p), p.grid(), "binary")
+    assert v.shape == a.shape and 0.0 <= v.min() and v.max() <= 1.0
+    assert abs(a.sum() - v.sum()) <= 0.02 * a.sum()
+    assert np.abs(a.mean(axis=0) - v.mean(axis=0)).max() <= 0.5 + 1e-9
+    assert np.abs(a.mean(axis=1) - v.mean(axis=1)).max() <= 0.5 + 1e-9
+    assert all(s.layer == "main" for s in app_layout(p).shapes)
+
+
+def test_line_ends_is_the_dense_array_broken_by_a_gap():
+    p = ParameterModel()
+    p.set("pattern", "line ends")
+    m = build_mask(p)
+    n = p.grid().n_pixels
+    dense = ParameterModel()
+    dense.set("pattern", "lines and spaces")
+    v = mask_from_layout(app_layout(dense), p.grid(), "binary")
+    # The gap row, a quarter of the way up, is dark; the centre row — where
+    # the CD is read — is the dense array.
+    assert m[n // 2 + n // 4].sum() == 0.0
+    assert np.allclose(m[n // 2], v[n // 2])
+    assert np.isfinite(compute_imaging(p).cd_nm) and compute_imaging(p).cd_nm > 0
+    # Not a 1-D pattern: no cross-section for the FDTD model; periodic in x.
+    assert p.mask_geometry() is None
+    assert mask_model_availability(193e-9, "line ends")["fdtd"] is not None
+    assert source_preview(p).order_shift is not None
+    assert np.array_equal(mask_preview(p), m)
+
+
+def test_an_attenuated_psm_layout_matches_the_pixel_conversion():
+    p = ParameterModel()
+    p.set("mask_type", "att-psm")
+    p.set("pattern", "isolated line")
+    hard = build_mask(p)
+    soft = mask_from_layout(app_layout(p), p.grid(), "att-psm")
+    assert np.iscomplexobj(soft)
+    n = p.grid().n_pixels
+    # Background clear, the drawn line the 6 %, 180° film — as the pixel
+    # conversion has it — and the same value wherever the raster is binary.
+    assert soft[0, 0] == 1.0 + 0.0j
+    assert soft[n // 2, n // 2] == pytest.approx(hard[n // 2, n // 2])
+    assert (np.abs(soft - hard) < 1e-12).mean() > 0.95
+
+
+def test_opc_refuses_the_fdtd_library():
+    p = ParameterModel()
+    p.set("mask_model", "fdtd")
+    assert opc_availability(p) is not None
+    with pytest.raises(ValueError, match="thin"):
+        print_model(p)
+    with pytest.raises(ValueError, match="thin"):
+        dose_to_size(p)
+    assert opc_availability(ParameterModel()) is None
+
+
+def test_the_correction_window_is_the_field_less_the_search_reach():
+    from litho_sim.opc import default_fragment_length
+
+    p = ParameterModel()
+    m = print_model(p)
+    n, px = p.grid().n_pixels, p.grid().pixel_size
+    x0, y0, x1, y1 = field_box(p.grid())
+    assert x1 - x0 == pytest.approx(n * px) and y1 - y0 == pytest.approx(n * px)
+    reach = 2.0 * default_fragment_length(m)
+    cx0, cy0, cx1, cy1 = correction_window(p, m)
+    assert cx0 == pytest.approx(x0 + reach) and cx1 == pytest.approx(x1 - reach)
+    assert cy0 == pytest.approx(y0 + reach) and cy1 == pytest.approx(y1 - reach)
+    # The model prints as Print does: the user's normalisation, not the
+    # engine's forced "clear".
+    assert m.optics.normalisation == p["normalisation"] == "peak"
+    assert m.tone == "clear" and m.mask_type == "binary"
+    p.set("mask_type", "att-psm")
+    assert print_model(p).tone == "dark"
+
+
+def test_dose_to_size_sizes_the_apps_own_dense_array():
+    from litho_sim.develop import measure_cd_2d
+
+    p = ParameterModel()
+    p.set("n_pixels", 96)
+    p.set("source_grid", 9)
+    d = dose_to_size(p)
+    assert np.isfinite(d) and 0.25 < d < 4.0 and d != 1.0
+    p.set("dose", d)
+    r = compute_imaging(p)
+    bright = measure_cd_2d(r.latent, p.grid().pixel_size, threshold=r.threshold,
+                           feature="above") * 1e9
+    assert bright == pytest.approx(100.0, abs=0.5)
+
+
+def test_the_correction_prints_the_design():
+    p = _opc_model("line ends")
+    r = compute_opc(p)
+    before, after = r.epe_before, r.epe_after
+    assert after.n_failed == 0 and after.n_fixed > 0
+    assert after.max_abs < 3e-9 and after.max_abs < 0.25 * before.max_abs
+    # The tips were the problem — pulled back — and were extended.
+    df = r.summary()
+    tips = df[(df.ny.abs() > 0.5) & (df.status == "ok")]
+    assert len(tips) > 0
+    assert tips.epe_before_nm.mean() < -5.0
+    assert tips.offset_nm.mean() > 3.0
+    assert "iteration" in opc_summary(r) and "ms]" in opc_summary(r)
+
+    # Print with the switch on images the corrected mask — the same mask the
+    # loop's own last print was judged on — and says so.
+    p.set("opc", True)
+    res = compute_imaging(p)
+    assert res.opc is not None and "OPC" in res.summary
+    assert np.allclose(res.aerial, res.opc.after.aerial)
+    assert not np.array_equal(res.mask, mask_preview(p)), "the mask printed is not the drawing"
+    p.set("opc", False)
+    off = compute_imaging(p)
+    assert off.opc is None and np.array_equal(off.mask, mask_preview(p))
+
+
+def test_scattering_bars_are_placed_beside_an_isolated_line_and_stay_dark():
+    from litho_sim.opc import assist_features_printed
+
+    # The app's own field. A 384 nm one wraps the two bars onto each other
+    # through the seam, and then they print — which is the seam, not the bars.
+    p = ParameterModel()
+    p.set("normalisation", "clear")
+    p.set("pattern", "isolated line")
+    p.set("opc_sraf", True)
+    p.set("opc_iterations", 3)
+    p.set("dose", dose_to_size(p))
+    r = compute_opc(p)
+    assert "sraf" in r.corrected.layers()
+    assert len(r.corrected.on_layer("sraf")) == 2
+    assert assist_features_printed(r.after, r.corrected) == [False, False]
+    assert "0 of 2 bars printed" in opc_summary(r)
+    # The loop was given the design with its bars; only the design's layer
+    # was corrected, and the bars came through untouched.
+    assert set(r.design.layers()) == {"main", "sraf"}
+    assert r.settings["layer"] == "main"
+    assert r.corrected.on_layer("sraf") == r.design.on_layer("sraf")
+    # Inside a dense array there is no room; only its outer lines, which
+    # are half isolated, get a bar — beyond the array, never between lines.
+    dense = _opc_model("lines and spaces")
+    dense.set("opc_sraf", True)
+    rd = compute_opc(dense)
+    lines = rd.design.on_layer("main")
+    outer = max(abs(s.cx) + 0.5 * s.w for s in lines)
+    inner = min(abs(s.cx) + 0.5 * s.w for s in lines)
+    bars = rd.design.on_layer("sraf")
+    assert bars, "the array's outer edges are half isolated and have room"
+    assert all(abs(b.cx) > outer for b in bars)
+    assert not any(abs(b.cx) < inner for b in bars)
+
+
+def test_the_pipeline_caches_the_correction_and_folds_the_stages():
+    p = _opc_model("line ends")
+    p.set("opc", True)
+    p.set("opc_iterations", 3)
+    pl = Pipeline()
+    first = compute_imaging(p, pl)
+    compute_imaging(p, pl)
+    assert first.opc is not None
+    assert pl.runs["opc"] == 1 and pl.runs["aerial"] == 1 and pl.runs["print_model"] == 1
+    # With the mask corrected, a develop knob is a mask knob.
+    p.set("threshold", 0.35)
+    compute_imaging(p, pl)
+    assert pl.runs["opc"] == 2 and pl.runs["mask"] == 2 and pl.runs["aerial"] == 2
+    # The switch alone reuses what is in hand, both ways.
+    p.set("opc", False)
+    assert compute_imaging(p, pl).opc is None and pl.runs["opc"] == 2
+    p.set("opc", True)
+    assert compute_imaging(p, pl).opc is not None and pl.runs["opc"] == 2
+    # A change of resist rebuilds the model but hands on the kernel cache.
+    model_before = pl._cache["print_model"].value
+    p.set("dose", p["dose"] * 1.1)
+    compute_imaging(p, pl)
+    model_after = pl._cache["print_model"].value
+    assert model_after is not model_before
+    assert model_after._raw_cache is model_before._raw_cache
+
+
+def test_stage_signatures_fold_when_the_mask_is_corrected():
+    p = ParameterModel()
+    aerial = p.stage_signature("aerial")
+    p.set("threshold", 0.5)
+    assert p.stage_signature("aerial") == aerial, "as drawn, a develop knob leaves the image alone"
+
+    p.set("opc", True)
+    aerial = p.stage_signature("aerial")
+    p.set("threshold", 0.6)
+    assert p.stage_signature("aerial") != aerial, "corrected, it changes the mask and so the image"
+    assert "threshold" in dict(p.stage_signature("mask"))
+    assert set(dict(p.stage_signature("mask"))) < set(dict(p.stage_signature("resist")))
+    # Cosmetic roughness and everything past the 2-D print still leave it alone.
+    resist = p.stage_signature("resist")
+    for key, value in (("tilt", 10.0), ("develop_model", "mack"), ("thickness", 200.0)):
+        p.set(key, value)
+    assert p.stage_signature("resist") == resist
+    mask = p.stage_signature("mask")
+    p.set("use_stochastic", True)
+    assert p.stage_signature("mask") == mask
+
+    # The correction's own signature ignores the switch and the cosmetics.
+    q = ParameterModel()
+    sig = q.opc_signature()
+    q.set("opc", True)
+    q.set("stochastic_sigma", 3.0)
+    assert q.opc_signature() == sig
+    q.set("dose", 0.5)
+    assert q.opc_signature() != sig
+    assert ParameterModel.stages_invalidated_by("opc") == (
+        "mask", "aerial", "scale", "resist", "profile3d")
+
+    # The 3-D latent follows the develop threshold only through a corrected mask.
+    r = ParameterModel()
+    latent = r.latent3d_signature()
+    r.set("mack_Mth", 0.6)
+    assert r.latent3d_signature() == latent
+    r.set("opc", True)
+    latent = r.latent3d_signature()
+    r.set("mack_Mth", 0.7)
+    assert r.latent3d_signature() != latent
+    latent = r.latent3d_signature()
+    r.set("develop_model", "front")
+    assert r.latent3d_signature() == latent, "the depth develop alone never enters the mask"
+
+
+def test_the_opc_knobs_sit_on_the_mask_tab():
+    for key in ("opc", "opc_iterations", "opc_corners", "opc_sraf"):
+        spec = SPECS_BY_KEY[key]
+        assert spec.group == "OPC" and tab_of(spec.group) == "Mask"
+        assert spec.stage == "mask"
+    assert SPECS_BY_KEY["opc"].default is False, "the mask prints as drawn until asked"

@@ -136,14 +136,17 @@ class ParamSpec:
 # ---------------------------------------------------------------------------
 
 #: Mask patterns the imaging panel can build, by display name.
-PATTERNS = ("lines and spaces", "contacts", "isolated line", "checkerboard")
+PATTERNS = ("lines and spaces", "contacts", "isolated line", "checkerboard", "line ends")
 
 SPECS: tuple[ParamSpec, ...] = (
     # -- mask ---------------------------------------------------------
     ParamSpec("pattern", "Pattern", "choice", "lines and spaces",
               choices=PATTERNS, group="Pattern", target="mask",
               stage="mask",
-              help="Which test structure to image."),
+              help="Which test structure to image. 'line ends' is the dense "
+                   "array with every line broken at the centre row by a gap "
+                   "of one drawn CD — the tip-to-tip test, where proximity "
+                   "effect pulls every end back."),
     ParamSpec("pitch", "Pitch", "float", 200.0, 40.0, 800.0, 5.0, "nm", 1e-9,
               group="Pattern", target="mask",
               stage="mask",
@@ -158,6 +161,40 @@ SPECS: tuple[ParamSpec, ...] = (
               help="binary = chrome on glass. att-psm = attenuated phase "
                    "shift: dark regions leak 6% at 180°, whose destructive "
                    "interference steepens the image edge."),
+
+    # -- OPC ----------------------------------------------------------
+    # The correction is a function of the whole process — optics, resist,
+    # dose — so with it on, the mask stage depends on every 2-D knob; see
+    # ParameterModel.stage_signature. These four are stage="mask" because
+    # they change what is drawn.
+    ParamSpec("opc", "Correct the mask", "bool", False,
+              group="OPC", target="mask", stage="mask",
+              help="Print through the OPC-corrected mask: the drawn edges "
+                   "moved, fragment by fragment, until the wafer prints the "
+                   "design at the process on the other tabs and at the dose "
+                   "on Expose. The correction runs with Print, or on its own "
+                   "from the Simulate tab, and the Mask tab shows it."),
+    ParamSpec("opc_iterations", "Iterations", "int", 12, 1, 24, 1,
+              group="OPC", target="mask", stage="mask",
+              help="Cap on the correction loop. Each iteration is one print "
+                   "of the field; a dense array converges in one or two, "
+                   "line ends and dense corners take ten. The best iterate "
+                   "is kept, not the last."),
+    ParamSpec("opc_corners", "Corners", "choice", "rounded",
+              choices=("rounded", "sharp"),
+              group="OPC", target="mask", stage="mask",
+              help="What the corners are corrected towards. 'rounded' "
+                   "targets the smallest radius the optics can draw; "
+                   "'sharp' chases the drawn corner, which no mask can "
+                   "print, all the way to the mask-rule cap."),
+    ParamSpec("opc_sraf", "Scattering bars", "bool", False,
+              group="OPC", target="mask", stage="mask",
+              help="Place sub-resolution assist bars by rule before "
+                   "correcting: a bar beside every edge with room for one, "
+                   "at the dense pitch's spacing, too thin to print. Gives "
+                   "an isolated edge the neighbour a dense one has for "
+                   "free. Inside a dense array there is no room; only its "
+                   "outer lines get one, beyond the array."),
 
     # -- mask 3-D -----------------------------------------------------
     # Everything here is stage="mask": it changes the diffraction spectrum, so
@@ -487,7 +524,7 @@ SPECS_BY_KEY: dict[str, ParamSpec] = {s.key: s for s in SPECS}
 #: is therefore one word in its spec — the placement of the resist chain is
 #: a first pass and expected to be revised.
 TAB_GROUPS: dict[str, tuple[str, ...]] = {
-    "Mask": ("Pattern", "Mask 3-D", "Grid"),
+    "Mask": ("Pattern", "OPC", "Mask 3-D", "Grid"),
     "Source": ("Optics", "Vector"),
     "Resist": ("Film", "Chemistry"),
     "Expose": ("Exposure", "Through the film"),
@@ -586,6 +623,28 @@ DEVELOP3D_ONLY: tuple[str, ...] = (
 #: 3-D refresh, and re-rendering for a knob the 3-D path cannot read would be
 #: 290 ms spent redrawing an identical picture.
 LATENT3D_IGNORES: tuple[str, ...] = DEVELOP3D_ONLY + ("threshold",)
+
+#: The 2-D print's stages — the ones a corrected mask makes depend on each
+#: other. ``profile3d`` hangs off the mask and inherits the dependency
+#: through it; ``view`` never computes.
+_STAGES_2D: tuple[str, ...] = ("mask", "aerial", "scale", "resist")
+
+#: Knobs the correction does *not* read: the switch that turns it on, and
+#: the cosmetic roughness stamped onto the developed image after the edge
+#: has been placed. Everything else on the 2-D path — pattern, optics,
+#: dose, chemistry, threshold — decides where an edge prints, so it decides
+#: the correction.
+OPC_IGNORES: tuple[str, ...] = (
+    "opc", "use_stochastic", "stochastic_sigma", "stochastic_corr_length",
+)
+
+#: What the 3-D latent ignores when the mask is corrected: only the knobs
+#: the depth develop alone reads. The develop threshold and tone enter the
+#: correction through the 2-D print model, so with OPC on they enter the
+#: mask, and through it the latent.
+LATENT3D_IGNORES_OPC: tuple[str, ...] = (
+    "develop_model", "inhibition_depth", "inhibition_rate",
+)
 
 
 @dataclass
@@ -771,9 +830,27 @@ class ParameterModel:
     def dose(self) -> float:
         return float(self.values["dose"])
 
+    @property
+    def opc_enabled(self) -> bool:
+        """Whether Print images the corrected mask rather than the drawn one."""
+        return bool(self.values["opc"])
+
     def signature(self) -> tuple:
         """Hashable snapshot, for deciding whether a recompute is needed."""
         return tuple(sorted((k, _hashable(v)) for k, v in self.values.items()))
+
+    def opc_signature(self) -> tuple:
+        """Snapshot of everything the correction depends on.
+
+        Every 2-D physical knob but :data:`OPC_IGNORES` — and not the
+        ``opc`` switch itself, so a correction run from the Simulate tab
+        with the switch off is the one Print picks up when it is turned on.
+        """
+        return tuple(sorted(
+            (s.key, _hashable(self.values[s.key]))
+            for s in SPECS
+            if s.stage in _STAGES_2D and s.key not in OPC_IGNORES
+        ))
 
     def stage_signature(self, stage: str) -> tuple:
         """Snapshot of only the parameters *stage* actually depends on.
@@ -782,15 +859,21 @@ class ParameterModel:
         because the pipeline is sequential. Keying a cache on this rather than
         on the whole model is what lets the threshold slider avoid rebuilding
         the aerial image.
+
+        With the mask corrected, the sequence folds back on itself: the
+        mask is a function of the process it was corrected for, so every
+        2-D stage depends on every 2-D knob, and a develop threshold moved
+        after a Print dates the aerial image too — as it should, because
+        the mask that made it is no longer the mask the correction would
+        draw.
         """
         if stage not in STAGES:
             raise ValueError(f"unknown stage '{stage}'; expected one of {STAGES}")
         upto = STAGES[: STAGES.index(stage) + 1]
-        return tuple(sorted(
-            (s.key, _hashable(self.values[s.key]))
-            for s in SPECS
-            if s.stage in upto
-        ))
+        keys = {s.key for s in SPECS if s.stage in upto}
+        if self.opc_enabled and stage in _STAGES_2D:
+            keys |= {k for k, _v in self.opc_signature()}
+        return tuple(sorted((k, _hashable(self.values[k])) for k in keys))
 
     def latent3d_signature(self) -> tuple:
         """Snapshot of everything the 3-D *latent* image depends on.
@@ -799,11 +882,14 @@ class ParameterModel:
         physical knob, so listing what it ignores is both shorter and safer —
         a new parameter is conservatively assumed to matter, and the cache
         stays correct by default rather than by remembering to update it.
+        With the mask corrected the exclusions shrink to the depth-develop
+        knobs alone (:data:`LATENT3D_IGNORES_OPC`).
         """
+        ignores = LATENT3D_IGNORES_OPC if self.opc_enabled else LATENT3D_IGNORES
         return tuple(sorted(
             (s.key, _hashable(self.values[s.key]))
             for s in SPECS
-            if s.key not in LATENT3D_IGNORES and s.stage != "view"
+            if s.key not in ignores and s.stage != "view"
         ))
 
     @staticmethod

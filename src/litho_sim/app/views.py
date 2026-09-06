@@ -153,14 +153,28 @@ class MaskView(_CanvasView):
 
     Live: the mask is a drawing of the settings, not a simulation, and it
     costs microseconds, so it follows the Pattern controls as they move.
+
+    With the correction on, what goes on the mask is the loop's output
+    rather than a drawing, and :meth:`show_corrected` shows that: the
+    corrected raster, with the design's outline over it so the jogs and
+    serifs the loop grew are visible against what was asked for.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ax = self.figure.add_subplot(111)
         theme.title(self.ax, "Mask")
+        self._outlines: list[Any] = []
 
-    def show_mask(self, mask: np.ndarray, pixel_nm: float | None = None) -> None:
+    def _clear_outlines(self) -> None:
+        for art in self._outlines:
+            art.remove()
+        self._outlines = []
+        legend = self.ax.get_legend()
+        if legend is not None:
+            legend.remove()
+
+    def _draw_raster(self, mask: np.ndarray, pixel_nm: float | None):
         h, w = mask.shape
         if pixel_nm:
             extent = (0.0, w * pixel_nm, 0.0, h * pixel_nm)
@@ -170,10 +184,62 @@ class MaskView(_CanvasView):
             labels = {"xlabel": "x [px]", "ylabel": "y [px]"}
         self._image("mask", self.ax, mask, CMAP.micrograph, extent=extent,
                     vmin=0.0, vmax=1.0, **labels)
+        self.ax.set_xlim(extent[0], extent[1])
+        self.ax.set_ylim(extent[2], extent[3])
+        return extent
+
+    def show_mask(self, mask: np.ndarray, pixel_nm: float | None = None) -> None:
+        self._clear_outlines()
+        self._draw_raster(mask, pixel_nm)
+        h, w = mask.shape
         px = f" · {pixel_nm:g} nm px" if pixel_nm else ""
         theme.title(self.ax, "Mask",
                     caption_text=f"transmittance, 1 = clear · {w}×{h} px{px}")
         self._paint()
+
+    def show_corrected(self, mask: np.ndarray, pixel_nm: float, result) -> None:
+        """The corrected mask as it will be imaged, with the design over it.
+
+        *mask* is the corrected layout rasterised on the grid it was
+        corrected for; *result* the :class:`~litho_sim.opc.OPCResult` it
+        came from, whose geometry is drawn in metres from the field centre
+        and shifted here onto the raster's frame.
+        """
+        self._clear_outlines()
+        self._draw_raster(mask, pixel_nm)
+        h, w = mask.shape
+        # Pixel (i, j) is centred at ((i − n//2)·px, (j − n//2)·px) in the
+        # geometry's frame and spans [i, i+1]·px in the image's.
+        shift = np.array([(w // 2 + 0.5) * pixel_nm, (h // 2 + 0.5) * pixel_nm])
+        layer = result.settings.get("layer")
+        self._outline(result.design, SERIES.reference, 0.9, "design", layer, shift)
+        if "sraf" in result.corrected.layers():
+            self._outline(result.corrected, MUTED, 0.9, "assist features", "sraf", shift)
+        self._outline(result.corrected, SERIES.warn, 1.0, "corrected", layer, shift)
+        offs = np.abs(result.offsets) * 1e9
+        sb, sa = result.epe_before.stats(), result.epe_after.stats()
+        theme.title(
+            self.ax, "Mask",
+            caption_text=(f"corrected · {len(offs)} fragments · largest move "
+                          f"{offs.max() if offs.size else 0.0:.1f} nm · max |EPE| "
+                          f"{sb['max_abs_epe_nm']:.1f} to {sa['max_abs_epe_nm']:.1f} nm · "
+                          f"{w}×{h} px · {pixel_nm:g} nm px"),
+        )
+        theme.legend(self.ax, where="top", ncol=3)
+        self._relayout = True
+        self._paint()
+
+    def _outline(self, layout, color, lw, label, layer, shift) -> None:
+        shapes = layout.shapes if layer is None else layout.on_layer(layer)
+        first = True
+        for sh in shapes:
+            p = np.asarray(sh.polygon(), dtype=np.float64) * 1e9 + shift
+            p = np.vstack([p, p[:1]])
+            (line,) = self.ax.plot(p[:, 0], p[:, 1], color=color, lw=lw,
+                                   label=label if first else None,
+                                   solid_joinstyle="miter")
+            self._outlines.append(line)
+            first = False
 
     def show_result(self, r: ImagingResult) -> None:
         px = float(r.x_nm[1] - r.x_nm[0]) if len(r.x_nm) > 1 else None

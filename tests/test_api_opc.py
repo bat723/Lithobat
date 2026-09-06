@@ -408,3 +408,58 @@ def test_opc_leaves_assist_features_alone(sraf_model):
     bars_out = res.corrected.on_layer("sraf")
     assert len(bars_out) == len(bars_in)
     assert all(a is b for a, b in zip(bars_in, bars_out))
+
+
+# ---------------------------------------------------------------------------
+# The clip: a simulation window
+# ---------------------------------------------------------------------------
+
+
+def test_clip_holds_the_fragments_outside_the_field(model, grid):
+    """A line drawn through the field has no ends — but its polygon does.
+
+    The image is periodic, so a control point past the field edge samples
+    the far side of the wrap and reads the window edge as a line end.
+    Told the field, the loop holds everything outside it: never measured,
+    never moved, and neither an error nor a failure.
+    """
+    n, px = grid.n_pixels, grid.pixel_size
+    half = 0.5 * n * px
+    lay = Layout(line_array(3, pitch=200e-9, cd=100e-9, length=3.0 * n * px), name="through")
+    box = (-half + 100e-9, -half + 100e-9, half - 100e-9, half - 100e-9)
+
+    frags = fragment_layout(lay, 40e-9, 20e-9, clip=box)
+    held = [f.fixed for fs in frags for f in fs.fragments]
+    assert any(held) and not all(held)
+    # Every fragment on a line end lies outside the field, and is held.
+    assert all(f.fixed for fs in frags for f in fs.fragments if abs(f.normal[1]) > 0.5)
+    assert not any(fragment_layout(lay, 40e-9, 20e-9)[0].fragments[i].fixed
+                   for i in range(len(frags[0])))
+
+    res = run_opc(lay, model, max_iter=6, clip=box)
+    after = res.epe_after
+    # The loop fragments at its own default length; count its own.
+    fixed = np.array([f.fixed for fs in res.fragmented for f in fs.fragments])
+    assert fixed.any() and not fixed.all()
+    assert after.n_fixed == int(fixed.sum()) and after.n_failed == 0
+    assert set(after.status) <= {"ok", "fixed"}
+    assert np.all(np.isnan(after.values[after.fixed]))
+    assert np.all(np.isnan(after.inside[after.fixed]))
+    assert np.all(res.offsets[fixed] == 0.0), "a held fragment never moves"
+    assert res.settings["clip"] == box
+    assert res.converged
+    # Inside the field a line is uniform along its length, so the live
+    # fragments of any one edge all found the same bias — the outer edges
+    # of the array see an isolated environment and find a different one.
+    df = res.summary()
+    live = df[df.status == "ok"]
+    assert len(live) > 0
+    per_edge = live.groupby(live.x_nm.round(3)).offset_nm.agg(lambda v: v.max() - v.min())
+    assert per_edge.max() < 1.0
+    assert set(df.status) <= {"ok", "fixed"}
+    assert after.stats()["n_fixed"] == after.n_fixed
+
+    # verify() is the loop's first measurement, clip included.
+    _, epe, _ = verify(lay, model, clip=box)
+    assert epe.status == res.epe_before.status
+    assert np.allclose(epe.values, res.epe_before.values, equal_nan=True)

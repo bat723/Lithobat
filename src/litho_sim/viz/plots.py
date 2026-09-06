@@ -507,10 +507,12 @@ def plot_opc(result, axes=None, clip_nm: tuple[float, float, float, float] | Non
     ax_mask.set_xlabel("x [nm]")
     ax_mask.set_ylabel("y [nm]")
     offs = np.abs(result.offsets) * 1e9
+    held = int(result.epe_after.n_fixed)
     theme.legend(ax_mask, where="top", ncol=2)
     theme.title(
         ax_mask, "Corrected mask",
-        caption_text=f"{len(offs)} fragments · largest move {offs.max():.1f} nm",
+        caption_text=f"{len(offs)} fragments · largest move {offs.max():.1f} nm"
+                     + (f" · {held} held outside the field" if held else ""),
     )
 
     # --- what printed -----------------------------------------------------

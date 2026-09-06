@@ -13,11 +13,19 @@ from litho_sim.app.compute import (
     Profile3DResult,
     estimate_cost_ms,
 )
+from litho_sim.app.opc import (
+    estimate_opc_cost_ms,
+    field_box,
+    opc_availability,
+    opc_summary,
+)
 from litho_sim.app.params import ParameterModel
 from litho_sim.app.process_window_tab import ProcessWindowTab
 from litho_sim.app.qt import Figure, FigureCanvasQTAgg, QtCore, QtWidgets
 from litho_sim.app.stochastics_tab import StochasticsTab
+from litho_sim.expose.hopkins import SOCSKernels
 from litho_sim.viz import theme
+from litho_sim.viz.plots import plot_opc
 from litho_sim.viz.theme import CMAP, SERIES
 
 logger = logging.getLogger(__name__)
@@ -25,6 +33,7 @@ logger = logging.getLogger(__name__)
 #: The runs, in the order they are offered. Each is a page below.
 KINDS: tuple[str, ...] = (
     "Print",
+    "OPC",
     "3-D resist profile",
     "Focus-exposure matrix",
     "Stochastic printing",
@@ -34,6 +43,13 @@ BLURBS: dict[str, str] = {
     "Print": (
         "Mask → aerial image → bake → develop, in 2-D. The result lands on "
         "the Expose, Bake and Develop tabs; the overview is here."
+    ),
+    "OPC": (
+        "Move the drawn edges until the wafer prints the design: fragment the "
+        "outline, print it through the process on the step tabs at the dose "
+        "on Expose, measure the edge placement error, move, repeat. The "
+        "corrected mask lands on the Mask tab, and is what Print images while "
+        "Correct the mask is on there."
     ),
     "3-D resist profile": (
         "The same print resolved through the film: one Abbe sum per optical "
@@ -152,10 +168,19 @@ class PrintPage(_RunPage):
     def refresh_cost(self, model: ParameterModel) -> None:
         ms = estimate_cost_ms(model)
         text = f"≈ {ms / 1000.0:.2f} s" if ms >= 1000 else f"≈ {ms:.0f} ms"
-        self.cost_label.setText(
+        note = (
             f"{text} for one image at these settings. Less when only a "
             f"develop or bake setting changed — the aerial image is cached."
         )
+        if model.opc_enabled:
+            opc_ms = estimate_opc_cost_ms(model, ms)
+            opc_text = f"≈ {opc_ms / 1000.0:.1f} s" if opc_ms >= 1000 else f"≈ {opc_ms:.0f} ms"
+            note += (
+                f" Plus {opc_text} to correct the mask first, unless the "
+                f"correction for these settings is already in hand — with it "
+                f"on, any change to the process changes the mask."
+            )
+        self.cost_label.setText(note)
 
     def show_result(self, r: ImagingResult) -> None:
         fig = self.figure
@@ -200,6 +225,120 @@ class PrintPage(_RunPage):
         self.canvas.draw_idle()
         self._summary = r.summary
         self.notes.setText(r.summary)
+
+
+class OpcPage(_RunPage):
+    """The correction, judged: the corrected mask over the design, what
+    printed before and after, the edge placement error it shrank, and the
+    iterations it took. The mask itself is on the Mask tab.
+
+    Beside Run sits **Dose to size**: the anchor every real process is set
+    up on, and what the engine's own OPC demo does first. At the defaults
+    the drawn 1:1 pattern prints 57 nm resist lines, and no mask bias
+    reaches 100 nm at that dose — the loop would drive edges until the
+    feature vanished and say so. Sizing the dose first is what makes the
+    correction a correction rather than a search for a process.
+    """
+
+    dose_requested = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(
+            "Run OPC",
+            "Set the pattern and the process up on their tabs, then press "
+            "Run OPC. The corrected mask lands on the Mask tab; how it was "
+            "judged lands here.",
+            parent,
+        )
+        self._reason: str | None = None
+        # Under the Run box: the anchor.
+        box = QtWidgets.QGroupBox("Anchor")
+        form = QtWidgets.QVBoxLayout(box)
+        self.dose_note = QtWidgets.QLabel(
+            "Set Dose on the Expose tab so the dense array of the drawn pitch "
+            "and CD prints the drawn CD — the anchor a process is set up on. "
+            "A correction started off-size chases the process, not the layout."
+        )
+        self.dose_note.setWordWrap(True)
+        self.dose_note.setStyleSheet("color: #666666;")
+        form.addWidget(self.dose_note)
+        self.dose_btn = QtWidgets.QPushButton("Dose to size")
+        self.dose_btn.clicked.connect(self.dose_requested)
+        form.addWidget(self.dose_btn)
+        holder = self.run_btn.parentWidget().parentWidget()
+        holder.layout().insertWidget(1, box)
+
+    def refresh_cost(self, model: ParameterModel) -> None:
+        self._reason = opc_availability(model)
+        self.dose_btn.setEnabled(self._reason is None)
+        if self._reason is not None:
+            # A run that cannot work is not offered; the reason is where
+            # the estimate would be.
+            self.cost_label.setText(self._reason)
+            self.run_btn.setEnabled(False)
+            return
+        prints = int(model["opc_iterations"]) + 2
+        ms = estimate_opc_cost_ms(model, estimate_cost_ms(model))
+        text = f"≈ {ms / 1000.0:.1f} s" if ms >= 1000 else f"≈ {ms:.0f} ms"
+        kernels = (" through the SOCS kernels"
+                   if SOCSKernels.supports(model.optics()) else "")
+        self.cost_label.setText(
+            f"{text}: up to {prints} prints of the field{kernels}, one per "
+            f"iteration. Nothing when the correction for these settings is "
+            f"already in hand."
+        )
+        self.run_btn.setEnabled(not self._busy)
+
+    def set_busy(self, on: bool) -> None:
+        super().set_busy(on)
+        if not on and self._reason is not None:
+            self.run_btn.setEnabled(False)
+
+    def show_opc(self, r, grid) -> None:
+        fig = self.figure
+        fig.clf()
+        # The two layout panels want to be square and large; the two
+        # curves do not. Two rows, the pictures on top.
+        gs = fig.add_gridspec(2, 2, height_ratios=[1.5, 1.0])
+        ax_mask = fig.add_subplot(gs[0, 0])
+        ax_print = fig.add_subplot(gs[0, 1])
+        ax_epe = fig.add_subplot(gs[1, 0])
+        # The layout runs past the field so its window ends are held; the
+        # pictures show the field, which is what was imaged.
+        x0, y0, x1, y1 = (v * 1e9 for v in field_box(grid))
+        plot_opc(r, axes=(ax_mask, ax_print, ax_epe), clip_nm=(x0, x1, y0, y1))
+        # Three long entries stacked over a half-width panel push its title
+        # off the top; one row under the axes reads as the caption it is.
+        theme.legend(ax_print, where="below", ncol=3)
+
+        ax = fig.add_subplot(gs[1, 1])
+        h = r.history
+        ax.plot(h.iteration, h.max_abs_epe_nm, color=SERIES.warn, marker="o", ms=3.5,
+                label="max |EPE|")
+        ax.plot(h.iteration, h.rms_epe_nm, color=SERIES.resist, marker="o", ms=3.5,
+                label="rms EPE")
+        theme.rule(ax, y=float(r.settings.get("tol", 1e-9)) * 1e9,
+                   color=SERIES.threshold, text="tolerance")
+        ax.set_xticks([int(i) for i in h.iteration])
+        ax.set_xlabel("iteration")
+        ax.set_ylabel("EPE [nm]")
+        ax.set_ylim(bottom=0.0)
+        theme.grid(ax)
+        s = r.settings
+        theme.title(
+            ax, "Convergence",
+            caption_text=(f"fragments {s['fragment_length'] * 1e9:.0f} nm · "
+                          f"corner radius {s['corner_radius'] * 1e9:.0f} nm · "
+                          f"gain {s['gain']:g}"
+                          + (" · adaptive" if s.get("adaptive") else "")
+                          + (" · scattering bars" if "sraf" in r.corrected.layers() else "")),
+        )
+        theme.legend(ax, where="top")
+        summary = opc_summary(r)
+        theme.caption(fig, summary)
+        self.canvas.draw_idle()
+        self._summary = summary
+        self.notes.setText(summary)
 
 
 class ProfilePage(_RunPage):
@@ -265,6 +404,8 @@ class SimulateTab(QtWidgets.QWidget):
     """
 
     run_print = QtCore.Signal(object)      # ParameterModel, a snapshot
+    run_opc = QtCore.Signal(object)        # ParameterModel, a snapshot
+    run_dose = QtCore.Signal(object)       # ParameterModel, a snapshot
     run_profile = QtCore.Signal(object)    # ParameterModel, a snapshot
     run_fem = QtCore.Signal(object)        # FemRequest
     run_stoch = QtCore.Signal(object)      # StochRequest
@@ -290,15 +431,20 @@ class SimulateTab(QtWidgets.QWidget):
 
         self.pages = QtWidgets.QStackedWidget()
         self.print_page = PrintPage()
+        self.opc_page = OpcPage()
         self.profile_page = ProfilePage()
         self.pw_tab = ProcessWindowTab(model)
         self.stoch_tab = StochasticsTab(model)
-        for page in (self.print_page, self.profile_page, self.pw_tab, self.stoch_tab):
+        # In KINDS order: the combo's index is the page's.
+        for page in (self.print_page, self.opc_page, self.profile_page,
+                     self.pw_tab, self.stoch_tab):
             self.pages.addWidget(page)
         outer.addWidget(self.pages, 1)
 
         self.kind.currentIndexChanged.connect(self._on_kind)
         self.print_page.run_requested.connect(self._run_print)
+        self.opc_page.run_requested.connect(self._run_opc)
+        self.opc_page.dose_requested.connect(self._run_dose)
         self.profile_page.run_requested.connect(self._run_profile)
         self.pw_tab.run_requested.connect(self.run_fem)
         self.stoch_tab.run_requested.connect(self.run_stoch)
@@ -330,6 +476,7 @@ class SimulateTab(QtWidgets.QWidget):
 
     def refresh_costs(self) -> None:
         self.print_page.refresh_cost(self.model)
+        self.opc_page.refresh_cost(self.model)
         self.profile_page.refresh_cost(self.model)
 
     # -- print ------------------------------------------------------------
@@ -339,6 +486,35 @@ class SimulateTab(QtWidgets.QWidget):
     def on_print_done(self, result: ImagingResult) -> None:
         self.print_page.set_busy(False)
         self.print_page.show_result(result)
+
+    # -- OPC --------------------------------------------------------------
+    def _run_opc(self) -> None:
+        self.run_opc.emit(copy.deepcopy(self.model))
+
+    def on_opc_done(self, result, grid) -> None:
+        """A correction arrived — from its own run, or inside a Print."""
+        self.opc_page.set_busy(False)
+        self.opc_page.show_opc(result, grid)
+
+    def _run_dose(self) -> None:
+        self.opc_page.dose_btn.setEnabled(False)
+        self.opc_page.notes.setText("sizing the dose…")
+        self.run_dose.emit(copy.deepcopy(self.model))
+
+    def on_dose_done(self, dose: float, cd_nm: float) -> None:
+        """The anchor dose arrived. The Dose knob has been set by the
+        window; this only says so — or says why it could not be."""
+        self.opc_page.dose_btn.setEnabled(True)
+        if np.isfinite(dose):
+            self.opc_page.notes.setText(
+                f"Dose set to {dose:.3f}: the dense array prints {cd_nm:.0f} nm."
+            )
+        else:
+            self.opc_page.notes.setText(
+                f"No dose in the bracket prints the dense array at {cd_nm:.0f} nm "
+                f"— the pitch is below what this process resolves, or the "
+                f"threshold is off. Dose left as it was."
+            )
 
     # -- 3-D --------------------------------------------------------------
     def _run_profile(self) -> None:
@@ -351,11 +527,13 @@ class SimulateTab(QtWidgets.QWidget):
     # -- shared -----------------------------------------------------------
     def on_failed(self, message: str) -> None:
         """A run failed. Release whichever page was waiting on it."""
-        for page in (self.print_page, self.profile_page):
+        for page in (self.print_page, self.opc_page, self.profile_page):
             if page.busy:
                 page.set_busy(False)
                 page.notes.setText(f"Failed — {message}")
 
-    def set_stale(self, print_stale: bool, profile_stale: bool) -> None:
+    def set_stale(self, print_stale: bool, profile_stale: bool,
+                  opc_stale: bool = False) -> None:
         self.print_page.set_stale(print_stale)
+        self.opc_page.set_stale(opc_stale)
         self.profile_page.set_stale(profile_stale)

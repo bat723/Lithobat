@@ -40,10 +40,12 @@ from litho_sim.app.compute import (
     FILM_PREVIEW_KEYS,
     ImagingResult,
     Profile3DResult,
+    build_mask,
     film_preview,
     mask_preview,
     source_preview,
 )
+from litho_sim.app.opc import opc_summary
 from litho_sim.app.params import (
     SPECS_BY_KEY,
     TAB_GROUPS,
@@ -90,10 +92,20 @@ PLACEHOLDER_PRINT = "Nothing printed yet — run Print on the Simulate tab."
 PLACEHOLDER_PROFILE = (
     "No 3-D profile yet — run 3-D resist profile on the Simulate tab."
 )
+STALE_OPC = (
+    "Settings changed since this mask was corrected — run OPC or Print on "
+    "the Simulate tab to correct it for them."
+)
+NO_OPC_YET = (
+    "Shown as drawn: the correction has not run yet. Run OPC or Print on "
+    "the Simulate tab, and the corrected mask appears here."
+)
 
 
 class MainWindow(QtWidgets.QMainWindow):
     request_print = QtCore.Signal(object)
+    request_opc = QtCore.Signal(object)
+    request_dose = QtCore.Signal(object)
     request3d = QtCore.Signal(object)
     request_flow = QtCore.Signal(object)
     request_device = QtCore.Signal(str)
@@ -178,6 +190,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._profile_params: ParameterModel | None = None
         self._inflight_profile: ParameterModel | None = None
         self._busy_3d = False
+        # The correction in hand — from its own run or inside a Print — the
+        # settings it was made for, and the corrected mask rasterised on
+        # that grid, which is what the Mask tab shows while it is on.
+        self._opc = None
+        self._opc_params: ParameterModel | None = None
+        self._opc_mask = None
+        self._drawn_opc = None      # the correction the Mask tab is showing
+        self._inflight_opc: ParameterModel | None = None
+        self._busy_opc = False
 
         # -- worker thread ---------------------------------------------
         self.thread = QtCore.QThread(self)
@@ -186,6 +207,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.request_print.connect(self.worker.run)
         self.worker.done.connect(self._on_print_done)
         self.worker.failed.connect(self._on_failed)
+        self.request_opc.connect(self.worker.run_opc)
+        self.worker.done_opc.connect(self._on_opc_done)
+        self.request_dose.connect(self.worker.run_dose_to_size)
+        self.worker.done_dose.connect(self._on_dose_done)
         self.request3d.connect(self.worker.run_3d)
         self.worker.done3d.connect(self._on_done_3d)
         self.request_flow.connect(self.worker.run_flow)
@@ -206,6 +231,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.thread.start()
 
         self.simulate_tab.run_print.connect(self._request_print)
+        self.simulate_tab.run_opc.connect(self._request_opc)
+        self.simulate_tab.run_dose.connect(self._request_dose)
         self.simulate_tab.run_profile.connect(self._request_3d)
         # One microscope: the SEM tab's instrument also images the Develop
         # tab's 3-D profile, so its knobs re-form that picture too.
@@ -258,6 +285,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.simulate_tab.refresh_costs()
 
     def _draw_mask(self) -> None:
+        """The mask as it will go on the reticle: drawn, or corrected.
+
+        With the correction on and one in hand, the corrected mask is shown
+        on the grid it was corrected for — the banner says if the settings
+        have moved past it. Otherwise the drawing of the Pattern settings,
+        live as ever.
+        """
+        if self.model.opc_enabled and self._opc is not None and self._opc_params is not None:
+            if self._drawn_opc is self._opc:
+                # A Pattern tick cannot change a correction already in hand
+                # — the banner says it is behind — and redrawing forty
+                # outlines and a legend per tick is what a lagging slider
+                # is made of.
+                return
+            self._drawn_opc = self._opc
+            self.mask_view.show_corrected(
+                self._opc_mask, float(self._opc_params["pixel_size"]), self._opc)
+            return
+        self._drawn_opc = None
         self.mask_view.show_mask(
             mask_preview(self.model), pixel_nm=float(self.model["pixel_size"])
         )
@@ -282,6 +328,12 @@ class MainWindow(QtWidgets.QMainWindow):
             != q.stage_signature("profile3d")
         )
 
+    @property
+    def _stale_opc(self) -> bool:
+        """Whether the correction in hand is for settings that have moved on."""
+        q = self._opc_params
+        return q is not None and self.model.opc_signature() != q.opc_signature()
+
     def _refresh_stale(self) -> None:
         """Put the banner on every picture the settings have moved past."""
         for name, stage in _PRINT_STAGE_OF_TAB.items():
@@ -292,8 +344,17 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 text = STALE_PRINT
             self.step_tabs[name].set_stale(text if stale else None)
+        # The Mask tab is a drawing until the correction is on; then it is a
+        # result like the others, and says so when it is behind or absent.
+        mask_note = None
+        if self.model.opc_enabled:
+            if self._opc is None:
+                mask_note = NO_OPC_YET
+            elif self._stale_opc:
+                mask_note = STALE_OPC
+        self.step_tabs["Mask"].set_stale(mask_note)
         print_stale = self._stale_print("resist")
-        self.simulate_tab.set_stale(print_stale, self._stale_profile)
+        self.simulate_tab.set_stale(print_stale, self._stale_profile, self._stale_opc)
         self.sem_tab.set_stale(print_stale, self._stale_profile)
 
     # -- print -------------------------------------------------------------
@@ -318,8 +379,62 @@ class MainWindow(QtWidgets.QMainWindow):
         self.develop_view.show_result(result)
         self.simulate_tab.on_print_done(result)
         self.sem_tab.set_print(result)
+        if result.opc is not None and self._print_params is not None:
+            # The print corrected its mask on the way: that correction is
+            # the one in hand now, on the Mask tab and the OPC page both.
+            self._adopt_opc(result.opc, self._print_params)
         self.status.showMessage(result.summary)
         self._refresh_stale()
+
+    # -- OPC ---------------------------------------------------------------
+    def _request_opc(self, params: ParameterModel) -> None:
+        if self._busy_opc:
+            return
+        self._busy_opc = True
+        self._inflight_opc = params
+        self.status.showMessage("correcting the mask…")
+        self.request_opc.emit(params)
+
+    def _adopt_opc(self, result, params: ParameterModel) -> None:
+        """Take a correction as the one in hand and show it where it lands."""
+        self._opc, self._opc_params = result, params
+        # Rasterised once, on the grid it was corrected for: the Mask tab
+        # redraws on every control tick and must not rasterise polygons then.
+        mask = build_mask(params, result.corrected)
+        self._opc_mask = mask.real if hasattr(mask, "real") and mask.dtype.kind == "c" else mask
+        self.simulate_tab.on_opc_done(result, params.grid())
+        self._draw_mask()
+
+    @QtCore.Slot(object)
+    def _on_opc_done(self, result) -> None:
+        self._busy_opc = False
+        params, self._inflight_opc = self._inflight_opc, None
+        if params is None:
+            return
+        self._adopt_opc(result, params)
+        self.status.showMessage(opc_summary(result))
+        self._refresh_stale()
+
+    def _request_dose(self, params: ParameterModel) -> None:
+        self.status.showMessage("sizing the dose on the dense array…")
+        self.request_dose.emit(params)
+
+    @QtCore.Slot(float)
+    def _on_dose_done(self, dose: float) -> None:
+        """Move the Dose knob to the anchor dose — through its own slider,
+        so the change is visible, dates what it dates, and is undone the
+        same way any setting is."""
+        import math
+
+        cd = float(self.model["cd"])
+        if math.isfinite(dose):
+            self.step_tabs["Expose"].panel.set_value("dose", dose)
+            self.status.showMessage(
+                f"dose set to {self.model['dose']:.3f} — the dense array prints "
+                f"{cd:.0f} nm")
+        else:
+            self.status.showMessage("no dose sizes the dense array at these settings")
+        self.simulate_tab.on_dose_done(dose, cd)
 
     # -- 3-D ---------------------------------------------------------------
     @property
@@ -545,8 +660,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # so the next press still runs.
         self._busy_print = False
         self._busy_3d = False
+        self._busy_opc = False
         self._inflight_print = None
         self._inflight_profile = None
+        self._inflight_opc = None
         self.simulate_tab.on_failed(message)
         self.status.showMessage(f"error: {message}")
 

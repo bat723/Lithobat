@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from litho_sim.app.pipeline import Pipeline
 
 from litho_sim.analysis import compute_nils
+from litho_sim.app.opc import app_layout, compute_opc, mask_from_layout
 from litho_sim.app.params import ParameterModel
 from litho_sim.bake import apply_peb
 from litho_sim.develop import (
@@ -75,13 +76,18 @@ class ImagingResult:
     #: axes honestly: intensity for the threshold model, PAC for mack, the
     #: protected fraction for car — 1 = unexposed for the chemistry two.
     latent_kind: str = "intensity after PEB"
+    #: The correction this print imaged through — an
+    #: :class:`~litho_sim.opc.OPCResult` — or ``None`` when the mask was
+    #: printed as drawn.
+    opc: Any = None
 
     @property
     def summary(self) -> str:
         cd = "—" if not np.isfinite(self.cd_nm) or self.cd_nm <= 0 else f"{self.cd_nm:.1f} nm"
+        corrected = "    OPC" if self.opc is not None else ""
         return (
             f"CD {cd}    NILS {self.nils:.2f}    "
-            f"contrast {self.contrast:.3f}    [{self.elapsed_ms:.0f} ms]"
+            f"contrast {self.contrast:.3f}{corrected}    [{self.elapsed_ms:.0f} ms]"
         )
 
     @property
@@ -89,17 +95,32 @@ class ImagingResult:
         return "—" if not np.isfinite(self.cd_nm) or self.cd_nm <= 0 else f"{self.cd_nm:.1f} nm"
 
 
-def build_mask(params: ParameterModel) -> NDArray:
+def build_mask(params: ParameterModel, corrected=None) -> NDArray:
     """The drawn pattern, as a transmittance array.
 
     Complex-valued when the mask type is att-psm — the dark regions carry a
     6 % amplitude at 180°, and the imaging path takes complex masks as-is.
+
+    Parameters
+    ----------
+    params : ParameterModel
+    corrected : Layout, optional
+        An OPC-corrected layout to draw instead of the pattern — the
+        ``corrected`` of an :class:`~litho_sim.opc.OPCResult`. Rasterised
+        anti-aliased from its geometry (:func:`~litho_sim.app.opc.
+        mask_from_layout`), as the correction's own prints were. The *line
+        ends* pattern is drawn the same way even uncorrected: it exists as
+        geometry only.
     """
     grid = params.grid()
     n, px = grid.n_pixels, grid.pixel_size
     pitch = params.si("pitch")
     cd = params.si("cd")
     pattern = params["pattern"]
+    mask_type = str(params["mask_type"])
+
+    if corrected is not None:
+        return mask_from_layout(corrected, grid, mask_type)
 
     mask: NDArray
     if pattern == "lines and spaces":
@@ -111,10 +132,12 @@ def build_mask(params: ParameterModel) -> NDArray:
         mask = isolated_line(n, px, cd=cd)
     elif pattern == "checkerboard":
         mask = checkerboard(n, px, pitch=pitch, cd=cd)
+    elif pattern == "line ends":
+        return mask_from_layout(app_layout(params), grid, mask_type)
     else:
         raise ValueError(f"unknown pattern '{pattern}'")
 
-    if params["mask_type"] == "att-psm":
+    if mask_type == "att-psm":
         mask = to_attenuated_psm(mask)
     return mask
 
@@ -142,11 +165,19 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
     optics = params.optics()
     resist_cfg = params.resist()
 
+    # With the correction on, the mask is the loop's output — cached in the
+    # pipeline like any stage, run here when there is none. Either way it
+    # is the same mask the loop's own prints were judged on.
+    opc_result = None
     if pipeline is not None:
         mask = pipeline.mask(params)
         aerial = pipeline.aerial(params)
+        if params.opc_enabled:
+            opc_result = pipeline.opc(params)
     else:
-        mask = build_mask(params)
+        if params.opc_enabled:
+            opc_result = compute_opc(params)
+        mask = build_mask(params, None if opc_result is None else opc_result.corrected)
         aerial = compute_aerial_image(mask, optics, grid, dose=params.dose)
 
     resist_model = params.resist_model
@@ -255,6 +286,7 @@ def compute_imaging(params: ParameterModel, pipeline=None) -> ImagingResult:
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
         signature=params.signature(),
         latent_kind=latent_kind,
+        opc=opc_result,
     )
 
 
@@ -308,7 +340,9 @@ def source_preview(params: ParameterModel) -> SourcePreview:
     )
     n_points = int(np.count_nonzero(source))
 
-    periodic = params["pattern"] in ("lines and spaces", "contacts", "checkerboard")
+    periodic = params["pattern"] in (
+        "lines and spaces", "contacts", "checkerboard", "line ends",
+    )
     pitch = params.si("pitch")
     shift = (optics.wavelength / (pitch * optics.NA)) if periodic and pitch > 0 else None
     k1 = params.si("cd") * optics.NA / optics.wavelength
@@ -456,8 +490,9 @@ def compute_profile_3d(
     resist_cfg = params.resist()
 
     if pipeline is None:
+        corrected = compute_opc(params).corrected if params.opc_enabled else None
         result = print_resist_3d(
-            build_mask(params),
+            build_mask(params, corrected),
             params.optics(),
             grid,
             resist_cfg,

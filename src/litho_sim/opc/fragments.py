@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from numpy.typing import NDArray
@@ -74,6 +74,12 @@ class Fragment:
         and normal. A fragment beside a convex corner is retargeted onto
         the rounded corner the optics can actually print; see
         :func:`fragment_shape`.
+    fixed : bool
+        Held at the drawn position and never measured. What a fragment
+        outside the imaged field becomes when a shape runs out of it (see
+        the ``clip`` of :func:`fragment_shape`): the imaging is periodic,
+        so a control point past the field edge would sample the wrong
+        side of the wrap and read a through-field line as a line end.
     """
 
     p0: NDArray[np.float64]
@@ -83,6 +89,7 @@ class Fragment:
     role: str = "body"
     site: NDArray[np.float64] | None = None
     site_normal: NDArray[np.float64] | None = None
+    fixed: bool = False
 
     @property
     def length(self) -> float:
@@ -372,6 +379,7 @@ def fragment_shape(
     fragment_length: float,
     corner_length: float | None = None,
     corner_radius: float | None = None,
+    clip: tuple[float, float, float, float] | None = None,
 ) -> FragmentedShape:
     """Split one shape's outline into fragments.
 
@@ -392,6 +400,11 @@ def fragment_shape(
         :func:`_retarget_corners`. ``None`` uses the fragment length;
         ``0`` keeps the drawn corners as targets — and shows why nobody
         does that.
+    clip : (x0, y0, x1, y1), optional
+        The imaged field [m]. Fragments whose control point lies outside
+        it are marked ``fixed``: never measured, never moved. For a shape
+        drawn through the whole field — a line in a periodic array — this
+        is what keeps its window edges from being corrected as line ends.
 
     Returns
     -------
@@ -418,7 +431,29 @@ def fragment_shape(
         # Counter-clockwise winding: outward is to the right of travel.
         normal = np.array([d[1], -d[0]], dtype=np.float64) / L
         frags.extend(_split_edge(a, b, i, normal, fragment_length, corner_length))
-    return FragmentedShape(source=shape, fragments=_retarget_corners(frags, pts, corner_radius))
+    frags = _retarget_corners(frags, pts, corner_radius)
+    if clip is not None:
+        frags = _hold_outside(frags, clip)
+    return FragmentedShape(source=shape, fragments=frags)
+
+
+def _hold_outside(frags: list[Fragment], clip: tuple[float, float, float, float]) -> list[Fragment]:
+    """Mark every fragment whose control point lies outside *clip* as fixed.
+
+    The box is ``(x0, y0, x1, y1)`` in metres — normally the imaged field.
+    A fragment measured outside it would sample the periodic image on the
+    far side of the wrap, which for a line drawn through the whole field
+    turns its window edge into a "line end" that reads ``merged`` at every
+    iteration and pulls the line apart. Holding such fragments is what a
+    simulation window means: the correction is for what is imaged.
+    """
+    x0, y0, x1, y1 = clip
+    out = []
+    for f in frags:
+        cx, cy = f.control_point
+        inside = x0 <= cx <= x1 and y0 <= cy <= y1
+        out.append(f if inside else replace(f, fixed=True))
+    return out
 
 
 def fragment_layout(
@@ -427,14 +462,24 @@ def fragment_layout(
     corner_length: float | None = None,
     layer: str | None = None,
     corner_radius: float | None = None,
+    clip: tuple[float, float, float, float] | None = None,
 ) -> list[FragmentedShape]:
-    """Fragment every shape of a layout (or of one layer of it), in order."""
+    """Fragment every shape of a layout (or of one layer of it), in order.
+
+    *clip* is the imaged field ``(x0, y0, x1, y1)`` [m]; fragments whose
+    control point falls outside it are held fixed — see
+    :func:`fragment_shape`.
+    """
     shapes = layout.shapes if layer is None else layout.on_layer(layer)
-    out = [fragment_shape(s, fragment_length, corner_length, corner_radius) for s in shapes]
+    out = [
+        fragment_shape(s, fragment_length, corner_length, corner_radius, clip=clip)
+        for s in shapes
+    ]
     logger.debug(
-        "Fragmented %d shapes into %d fragments (%.1f nm body, %s corner)",
+        "Fragmented %d shapes into %d fragments (%.1f nm body, %s corner, %d held)",
         len(out), sum(len(f) for f in out), fragment_length * 1e9,
         "none" if corner_length == 0 else f"{(corner_length or fragment_length / 2) * 1e9:.1f} nm",
+        sum(f.fixed for fs in out for f in fs.fragments),
     )
     return out
 

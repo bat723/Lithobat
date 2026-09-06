@@ -346,7 +346,7 @@ def test_the_simulate_menu_runs_from_any_tab(monkeypatch):
     try:
         _fast(win)
         labels = [a.text() for a in win.simulate_menu.actions()]
-        assert labels == ["Print", "3-D resist profile", "Focus-exposure matrix",
+        assert labels == ["Print", "OPC", "3-D resist profile", "Focus-exposure matrix",
                           "Stochastic printing"]
         win.tabs.setCurrentWidget(win.step_tabs["Bake"])
         win.simulate_actions["Print"].trigger()
@@ -610,6 +610,115 @@ def test_the_sem_tab_images_the_wafer_stack_at_the_step_on_screen(monkeypatch):
         win.stack_tab.load_stack(taller, label="with metal")
         assert "with metal" in tab.figure.axes[0].get_title(loc="left")
         assert tab.last.image.shape != before.shape or not np.array_equal(tab.last.image, before)
+    finally:
+        win.thread.quit()
+        win.thread.wait(2000)
+        win.close()
+
+
+# ---------------------------------------------------------------------------
+# OPC: the corrected mask on the Mask tab, and Print imaging it
+# ---------------------------------------------------------------------------
+
+
+def test_the_opc_section_is_on_the_mask_tab():
+    keys = {s.key for s in SPECS if tab_of(s.group) == "Mask"}
+    assert {"opc", "opc_iterations", "opc_corners", "opc_sraf"} <= keys
+    assert TAB_GROUPS["Mask"] == ("Pattern", "OPC", "Mask 3-D", "Grid")
+
+
+@needs_qt
+def test_opc_lands_on_the_mask_tab_and_print_images_it(monkeypatch):
+    """The whole loop, through the window: size the dose from the OPC page,
+    turn the correction on, run it, see it on the Mask tab, print through
+    it, and watch a develop knob date the mask now that the mask is a
+    result."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from matplotlib.backends.qt_compat import QtWidgets
+
+    from litho_sim.app.main import NO_OPC_YET, STALE_OPC, MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = MainWindow()
+    try:
+        # A field the loop can judge, fast: the guard band takes two search
+        # reaches off it, so 64 px would leave nothing live.
+        win.model.set("n_pixels", 96)
+        win.model.set("source_grid", 9)
+        win.model.set("n_z_slices", 3)
+        win.model.set("normalisation", "clear")
+        win.step_tabs["Mask"].panel._emit("pattern", "line ends")
+        mask_tab = win.step_tabs["Mask"]
+        page = win.simulate_tab.opc_page
+        assert not mask_tab.stale
+        assert page.run_btn.isEnabled() and page.dose_btn.isEnabled()
+        assert "prints of the field" in page.cost_label.text()
+
+        # Dose to size moves the Dose knob, exactly, through its own slider.
+        page.dose_btn.click()
+        _wait(app, lambda: "Dose set" in page.notes.text() or "No dose" in page.notes.text())
+        assert "Dose set" in page.notes.text()
+        dose = win.model["dose"]
+        assert 0.25 < dose < 4.0 and dose != 1.0
+        label = win.step_tabs["Expose"].panel._labels["dose"].text()
+        assert f"{dose:.2f}" in label
+        assert win.step_tabs["Expose"].panel._widgets["dose"].value() == round((dose - 0.2) / 0.05)
+
+        # The switch alone: the mask is now a result that does not exist yet.
+        mask_tab.panel._emit("opc", True)
+        assert mask_tab.stale and mask_tab.banner.text() == NO_OPC_YET
+        assert "transmittance" in win.mask_view.readout
+        assert "correct the mask" in win.simulate_tab.print_page.cost_label.text()
+
+        # Run OPC from the Simulate tab: it lands on the Mask tab.
+        win.simulate_tab.select("OPC")
+        win.simulate_tab.run_current()
+        assert not page.run_btn.isEnabled()
+        _wait(app, lambda: win._opc is not None and not win._busy_opc, 60.0)
+        assert page.run_btn.isEnabled()
+        assert not mask_tab.stale
+        assert "corrected" in win.mask_view.readout and "max |EPE|" in win.mask_view.readout
+        assert win.mask_view._outlines, "the design is drawn over the corrected mask"
+        assert win.mask_view.ax.get_legend() is not None
+        assert "max |EPE|" in page.notes.text() and "iteration" in page.notes.text()
+        assert "max |EPE|" in win.status.currentMessage()
+        assert win._opc.epe_after.max_abs < win._opc.epe_before.max_abs
+
+        # Print images that correction rather than running its own.
+        runs = win.worker.pipeline.runs["opc"]
+        win.simulate_tab.print_page.run_btn.click()
+        _wait(app, lambda: win._last_result is not None and not win._busy_print)
+        assert win._last_result.opc is not None
+        assert win.worker.pipeline.runs["opc"] == runs
+        assert "OPC" in win.status.currentMessage()
+        for name in ("Expose", "Bake", "Develop"):
+            assert not win.step_tabs[name].stale
+
+        # Redrawing the corrected mask on a control tick stays cheap.
+        t0 = time.perf_counter()
+        for _ in range(10):
+            win._draw_mask()
+        assert (time.perf_counter() - t0) / 10 < 0.25
+
+        # A develop knob is now a mask knob: it dates the mask, the image,
+        # the print and the correction alike.
+        win.step_tabs["Develop"].panel._emit("threshold", 0.35)
+        assert mask_tab.stale and mask_tab.banner.text() == STALE_OPC
+        assert win.step_tabs["Expose"].stale
+        assert page.stale and win.simulate_tab.print_page.stale
+        # Still showing the correction in hand, not the drawing.
+        assert "corrected" in win.mask_view.readout
+
+        # Off again: the drawing is back, and nothing on the Mask tab is stale.
+        mask_tab.panel._emit("opc", False)
+        assert not mask_tab.stale
+        assert "transmittance" in win.mask_view.readout
+        assert not win.mask_view._outlines and win.mask_view.ax.get_legend() is None
+
+        # A process the correction cannot image is not offered.
+        win.step_tabs["Mask"].panel._emit("mask_model", "fdtd")
+        assert not page.run_btn.isEnabled() and not page.dose_btn.isEnabled()
+        assert "thin" in page.cost_label.text()
     finally:
         win.thread.quit()
         win.thread.wait(2000)

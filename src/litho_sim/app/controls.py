@@ -324,6 +324,32 @@ class ControlPanel(QtWidgets.QWidget):
         """The parameters this panel has a widget for."""
         return tuple(self._widgets)
 
+    def set_value(self, key: str, value) -> None:
+        """Move a control to *value* as the app would, not as a hand would.
+
+        The model takes the value exactly — a slider's tick would round a
+        sized dose of 0.932 to 0.95, which is not sized — and the widget is
+        put on its nearest tick with its signals blocked, so the rounding
+        never writes back. The label shows the exact value and the change
+        is announced like any other, so what it dates gets dated.
+        """
+        spec = SPECS_BY_KEY[key]
+        w = self._widgets[key]
+        stored = self.model.set(key, value)
+        blocked = QtCore.QSignalBlocker(w)
+        if spec.kind == "bool":
+            w.setChecked(bool(stored))
+        elif spec.kind == "choice":
+            w.setCurrentText(str(stored))
+        else:
+            w.setValue(to_slider(spec, stored))
+        del blocked
+        if key in self._labels:
+            self._labels[key].setText(spec_label(spec, stored))
+        if key in ("wavelength", "pattern", "mask_type"):
+            self.refresh_mask_models()
+        self.changed.emit(key, stored)
+
     # -- construction --------------------------------------------------
     def _build_row(self, spec: ParamSpec):
         label, w, is_slider = build_spec_row(

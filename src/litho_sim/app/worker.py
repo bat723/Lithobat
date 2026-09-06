@@ -35,6 +35,8 @@ class Worker(QtCore.QObject):
     progress_fem = QtCore.Signal(int, int)
     done_stoch = QtCore.Signal(object)   # StochResult, or None on failure
     progress_stoch = QtCore.Signal(int, int)
+    done_opc = QtCore.Signal(object)     # OPCResult
+    done_dose = QtCore.Signal(float)     # dose-to-size, NaN when nothing sizes
     failed = QtCore.Signal(str)
 
     def __init__(self, parent=None):
@@ -49,6 +51,32 @@ class Worker(QtCore.QObject):
             # A bad parameter combination must not take the app down; the
             # message goes to the status bar and the user carries on.
             logger.exception("compute failed")
+            self.failed.emit(str(exc))
+
+    @QtCore.Slot(object)
+    def run_opc(self, params: ParameterModel) -> None:
+        """The correction on its own: the mask the next Print would image.
+
+        Through the pipeline, so a Print that follows with the switch on
+        finds it already done — and a Print that ran first has left it
+        here for this.
+        """
+        try:
+            self.done_opc.emit(self.pipeline.opc(params))
+        except Exception as exc:                      # noqa: BLE001
+            logger.exception("OPC failed")
+            self.failed.emit(str(exc))
+
+    @QtCore.Slot(object)
+    def run_dose_to_size(self, params: ParameterModel) -> None:
+        """The dose that prints the dense array to size — one image and a
+        bisection of rescales, so tens of milliseconds. NaN when no dose does."""
+        from litho_sim.app.opc import dose_to_size
+
+        try:
+            self.done_dose.emit(dose_to_size(params))
+        except Exception as exc:                      # noqa: BLE001
+            logger.exception("dose-to-size failed")
             self.failed.emit(str(exc))
 
     @QtCore.Slot(object)

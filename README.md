@@ -143,12 +143,15 @@ python -m litho_sim.app        # or: litho-sim-app
 
 One tab per processing step — Mask, Source, Resist, Expose, Bake, Develop —
 each with its controls beside its picture; then Wafer Stack for a process
-flow on the printed resist, Simulate to run things (a print, a 3-D profile,
-a focus–exposure matrix, stochastic trials), and SEM to image what ran the
-way a fab would. Nothing physical computes while a control moves; results
-land on the step tabs with staleness banners. File ▸ Load device builds the
-GAA or nFET preset off the GUI thread and drops it in as the starting wafer.
-The two 3-D views need the `app` extra's pyvista.
+flow on the printed resist, Simulate to run things (a print, OPC, a 3-D
+profile, a focus–exposure matrix, stochastic trials), and SEM to image what
+ran the way a fab would. Nothing physical computes while a control moves;
+results land on the step tabs with staleness banners. Tick *Correct the
+mask* on the Mask tab and Print images the OPC-corrected mask, drawn there
+over the design; the Simulate tab's OPC page sizes the dose to the dense
+array first and shows how the correction was judged. File ▸ Load device
+builds the GAA or nFET preset off the GUI thread and drops it in as the
+starting wafer. The two 3-D views need the `app` extra's pyvista.
 
 ![The desktop app](results/qt_app_window.png)
 

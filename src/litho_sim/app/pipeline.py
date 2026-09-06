@@ -62,8 +62,10 @@ class Pipeline:
     def __init__(self) -> None:
         self._cache: dict[str, _Entry] = {}
         #: Counts of genuine (non-cached) evaluations, for tests and telemetry.
-        #: `profile_latent` is not one of the 2-D stages but is cached alike.
-        self.runs: dict[str, int] = {s: 0 for s in (*STAGES, "profile_latent")}
+        #: `profile_latent` and `opc` are not 2-D stages but are cached alike.
+        self.runs: dict[str, int] = {
+            s: 0 for s in (*STAGES, "profile_latent", "opc", "print_model")
+        }
 
     # -- cache plumbing ------------------------------------------------
     def _get(self, stage: str, signature: tuple):
@@ -86,7 +88,12 @@ class Pipeline:
 
     # -- stages --------------------------------------------------------
     def mask(self, params: ParameterModel) -> NDArray[np.float64]:
-        """The drawn pattern."""
+        """The pattern as it goes on the mask: drawn, or corrected.
+
+        With OPC on this is the corrected layout rasterised, and its
+        signature is the whole 2-D process — ``stage_signature`` already
+        says so — because that is what the correction depends on.
+        """
         sig = params.stage_signature("mask")
         hit = self._get("mask", sig)
         if hit is not None:
@@ -94,7 +101,42 @@ class Pipeline:
 
         from litho_sim.app.compute import build_mask
 
-        return self._put("mask", sig, build_mask(params))
+        corrected = self.opc(params).corrected if params.opc_enabled else None
+        return self._put("mask", sig, build_mask(params, corrected))
+
+    # -- the correction ------------------------------------------------
+    def print_model(self, params: ParameterModel):
+        """The process as a print model, its SOCS kernels kept across runs.
+
+        Keyed on the aerial stage. A change there, or anywhere with OPC on,
+        builds a fresh model — cheap — but hands it the old kernel cache,
+        which the model re-keys on its own optics and grid and reuses when
+        those are unchanged. The kernels are the only part worth keeping.
+        """
+        from litho_sim.app.opc import print_model
+
+        sig = params.stage_signature("aerial")
+        hit = self._get("print_model", sig)
+        if hit is not None:
+            return hit
+        previous = self._cache.get("print_model")
+        cache = previous.value._raw_cache if previous is not None else None
+        return self._put("print_model", sig, print_model(params, cache=cache))
+
+    def opc(self, params: ParameterModel):
+        """The correction for the current process — an ``OPCResult``.
+
+        Cached on :meth:`ParameterModel.opc_signature`, which leaves the
+        ``opc`` switch out: a correction run on its own from the Simulate
+        tab is the one the next Print uses once the switch is on.
+        """
+        from litho_sim.app.opc import compute_opc
+
+        sig = params.opc_signature()
+        hit = self._get("opc", sig)
+        if hit is not None:
+            return hit
+        return self._put("opc", sig, compute_opc(params, model=self.print_model(params)))
 
     def aerial_raw(self, params: ParameterModel):
         """``(raw_sum, peak, clear)`` — the Abbe sum before normalisation.

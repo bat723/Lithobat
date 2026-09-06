@@ -289,8 +289,10 @@ class EPE:
         the drawn one. NaN where the edge could not be found.
     status : list of str
         ``"ok"``, ``"missing"`` (no printed feature within reach on the
-        inside of the drawn edge) or ``"merged"`` (the printed feature runs
-        past the search range on the outside).
+        inside of the drawn edge), ``"merged"`` (the printed feature runs
+        past the search range on the outside) or ``"fixed"`` (a fragment
+        held outside the imaged field and never measured — NaN here, and
+        neither an error nor a failure).
     inside : (M,) array
         The signed field *at* each control point — the raw quantity the
         EPE is a root of; useful for diagnosing a fragment.
@@ -305,8 +307,17 @@ class EPE:
         return np.array([s == "ok" for s in self.status], dtype=bool)
 
     @property
+    def fixed(self) -> NDArray[np.bool_]:
+        return np.array([s == "fixed" for s in self.status], dtype=bool)
+
+    @property
     def n_failed(self) -> int:
-        return int((~self.ok).sum())
+        """Sites where the printed edge was not found — missing or merged."""
+        return int(sum(s in ("missing", "merged") for s in self.status))
+
+    @property
+    def n_fixed(self) -> int:
+        return int(self.fixed.sum())
 
     @property
     def max_abs(self) -> float:
@@ -328,6 +339,7 @@ class EPE:
             "mean_epe_nm": float(v.mean()) * 1e9 if v.size else float("nan"),
             "n_fragments": int(len(self.values)),
             "n_failed": self.n_failed,
+            "n_fixed": self.n_fixed,
         }
 
 
@@ -366,6 +378,7 @@ def measure_epe(
 
     cps = np.concatenate([fs.control_points for fs in fragmented], axis=0)
     nms = np.concatenate([fs.control_normals for fs in fragmented], axis=0)
+    held = np.array([f.fixed for fs in fragmented for f in fs.fragments], dtype=bool)
     M = len(cps)
     if M == 0:
         return EPE(np.zeros(0), [], np.zeros(0))
@@ -377,6 +390,12 @@ def measure_epe(
     values = np.full(M, np.nan)
     status = ["ok"] * M
     for i in range(M):
+        if held[i]:
+            # Outside the imaged field: the sample above wrapped to the
+            # far side of the periodic image and says nothing about this
+            # edge. Not an error, not a failure — simply not measured.
+            status[i] = "fixed"
+            continue
         gi = g[i]
         if gi[j0] >= 0.0:
             # Inside the printed feature: walk outward to where it ends.
@@ -396,7 +415,9 @@ def measure_epe(
             j = j0 - 1 - int(inn[0])       # first inside sample, going inward
             a, b = gi[j], gi[j + 1]        # a >= 0 > b
             values[i] = s[j] + (s[j + 1] - s[j]) * (a / (a - b))
-    return EPE(values, status, g[:, j0].copy())
+    inside = g[:, j0].copy()
+    inside[held] = np.nan
+    return EPE(values, status, inside)
 
 
 __all__ = ["PrintedImage", "PrintModel", "EPE", "measure_epe"]
