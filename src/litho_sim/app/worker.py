@@ -36,6 +36,8 @@ class Worker(QtCore.QObject):
     done_stoch = QtCore.Signal(object)   # StochResult, or None on failure
     progress_stoch = QtCore.Signal(int, int)
     done_opc = QtCore.Signal(object)     # OPCResult
+    done_ilt = QtCore.Signal(object)     # ILTResultBundle, or None on failure
+    progress_ilt = QtCore.Signal(object)  # ILTFrame, one per solver iteration
     done_dose = QtCore.Signal(float)     # dose-to-size, NaN when nothing sizes
     failed = QtCore.Signal(str)
 
@@ -66,6 +68,29 @@ class Worker(QtCore.QObject):
         except Exception as exc:                      # noqa: BLE001
             logger.exception("OPC failed")
             self.failed.emit(str(exc))
+
+    @QtCore.Slot(object)
+    def run_ilt(self, req) -> None:
+        """An inverse-lithography solve, streaming its own iterations.
+
+        Not through ``self.pipeline`` for the FEM's reason: the solve reuses
+        nothing the live view caches, and would evict what it does cache.
+
+        The frames go out as they are made rather than at the end, because in
+        this one computation the intermediate states are the result the user
+        asked for. Emitting a queued signal per iteration is cheap next to the
+        three aerial images that produced it.
+        """
+        from litho_sim.app.ilt import ILTResultBundle, compute_ilt
+
+        result: ILTResultBundle | None = None
+        try:
+            result = compute_ilt(req, progress=self.progress_ilt.emit)
+        except Exception as exc:                      # noqa: BLE001
+            logger.exception("ILT solve failed")
+            self.failed.emit(str(exc))
+        # Always emitted, even on failure — same contract as done_fem.
+        self.done_ilt.emit(result)
 
     @QtCore.Slot(object)
     def run_dose_to_size(self, params: ParameterModel) -> None:

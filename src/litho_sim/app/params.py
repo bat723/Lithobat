@@ -136,7 +136,10 @@ class ParamSpec:
 # ---------------------------------------------------------------------------
 
 #: Mask patterns the imaging panel can build, by display name.
-PATTERNS = ("lines and spaces", "contacts", "isolated line", "checkerboard", "line ends")
+PATTERNS = (
+    "lines and spaces", "contacts", "isolated line", "checkerboard", "line ends",
+    "frame and bars", "isolated contacts",
+)
 
 SPECS: tuple[ParamSpec, ...] = (
     # -- mask ---------------------------------------------------------
@@ -146,7 +149,12 @@ SPECS: tuple[ParamSpec, ...] = (
               help="Which test structure to image. 'line ends' is the dense "
                    "array with every line broken at the centre row by a gap "
                    "of one drawn CD — the tip-to-tip test, where proximity "
-                   "effect pulls every end back."),
+                   "effect pulls every end back. 'frame and bars' and "
+                   "'isolated contacts' are isolated designs drawn in units of "
+                   "the CD with empty field around them — what inverse "
+                   "lithography answers with curves and assist rings. They want "
+                   "a field of about twenty CDs: Grid 256 at 8 nm pixels for a "
+                   "100 nm CD."),
     ParamSpec("pitch", "Pitch", "float", 200.0, 40.0, 800.0, 5.0, "nm", 1e-9,
               group="Pattern", target="mask",
               stage="mask",

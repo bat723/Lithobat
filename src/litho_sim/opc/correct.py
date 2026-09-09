@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from litho_sim.mask.geometry import shapes_overlap_distance
+from litho_sim.mask.geometry import polygon_distance, shapes_overlap_distance
 from litho_sim.mask.layout import Layout
 from litho_sim.opc.fragments import (
     FragmentedShape,
@@ -451,11 +451,15 @@ def _warn_if_touching(shapes) -> None:
     booleans in this engine, so the fix is upstream: draw a T as one
     :class:`~litho_sim.mask.geometry.Polygon`.
     """
+    # Bounding boxes first, since they are cheap and never miss a touch;
+    # then the exact outline distance, since a box also encloses whatever
+    # sits in a concave shape's bay — a bar inside a frame is not abutting it.
     touching = [
         (i, j)
         for i in range(len(shapes))
         for j in range(i + 1, len(shapes))
         if shapes_overlap_distance(shapes[i], shapes[j]) <= 0.0
+        and polygon_distance(shapes[i], shapes[j]) <= 0.0
     ]
     if touching:
         logger.warning(

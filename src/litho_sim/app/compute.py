@@ -109,8 +109,8 @@ def build_mask(params: ParameterModel, corrected=None) -> NDArray:
         ``corrected`` of an :class:`~litho_sim.opc.OPCResult`. Rasterised
         anti-aliased from its geometry (:func:`~litho_sim.app.opc.
         mask_from_layout`), as the correction's own prints were. The *line
-        ends* pattern is drawn the same way even uncorrected: it exists as
-        geometry only.
+        ends*, *frame and bars* and *isolated contacts* patterns are drawn the
+        same way even uncorrected: they exist as geometry only.
     """
     grid = params.grid()
     n, px = grid.n_pixels, grid.pixel_size
@@ -132,7 +132,7 @@ def build_mask(params: ParameterModel, corrected=None) -> NDArray:
         mask = isolated_line(n, px, cd=cd)
     elif pattern == "checkerboard":
         mask = checkerboard(n, px, pitch=pitch, cd=cd)
-    elif pattern == "line ends":
+    elif pattern in ("line ends", "frame and bars", "isolated contacts"):
         return mask_from_layout(app_layout(params), grid, mask_type)
     else:
         raise ValueError(f"unknown pattern '{pattern}'")

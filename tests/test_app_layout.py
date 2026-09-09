@@ -42,7 +42,7 @@ needs_qt = pytest.mark.skipif(not _qt_binding_available(), reason="needs a Qt bi
 #: What the tab bar must read, left to right.
 EXPECTED_TABS = [
     "Mask", "Source", "Resist", "Expose", "Bake", "Develop",
-    "Wafer Stack", "Simulate", "SEM",
+    "Wafer Stack", "Simulate", "ILT", "SEM",
 ]
 
 

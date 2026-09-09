@@ -37,7 +37,7 @@ from numpy.typing import NDArray
 from litho_sim.app.params import ParameterModel
 from litho_sim.core.config import GridConfig
 from litho_sim.expose.hopkins import SOCSKernels
-from litho_sim.mask import Contact, Layout, Rect
+from litho_sim.mask import Contact, Layout, Polygon, Rect
 from litho_sim.opc import (
     OPCResult,
     PrintModel,
@@ -49,6 +49,16 @@ from litho_sim.opc import (
 
 #: The layer the design is drawn on; scattering bars go on ``"sraf"``.
 LAYER = "main"
+
+#: Patterns drawn to their own scale rather than the field's: isolated
+#: designs with empty field around them, the case inverse lithography is
+#: usually shown on. See :func:`field_fit` for what "empty field" costs.
+ISOLATED = ("frame and bars", "isolated contacts")
+
+#: How much of the field's width or height an isolated design may take up.
+#: The imaging wraps at the field edge, so a design that fills the field meets
+#: its own copy through the seam and prints as a dense array of itself.
+_FILL = 0.8
 
 #: Amplitude of an attenuated-PSM film: 6 % intensity at 180°. The same
 #: constants :func:`~litho_sim.mask.patterns.to_attenuated_psm` uses.
@@ -82,6 +92,84 @@ def _periodic_centres(pitch: float, cd: float, lo: float, hi: float) -> list[flo
     return [c0 + k * pitch for k in range(k_lo, k_hi + 1) if lo <= c0 + k * pitch <= hi]
 
 
+def _frame_and_bars(cd: float) -> list:
+    """A frame with three bars inside, drawn in units of the CD.
+
+    The design inverse lithography is usually shown on: isolated, with empty
+    field around it where the solve nucleates assist rings nobody drew. The
+    frame is *one* polygon, broken at the bottom by a gap of two CDs — a
+    closed ring would need a hole, and a frame of four abutting rectangles
+    would hand the edge loop shared edges to correct as two facing ones (see
+    :func:`~litho_sim.opc.correct.run_opc`). The break is a tip-to-tip pair in
+    its own right. Counter-clockwise, as :class:`~litho_sim.mask.Rect` draws.
+    """
+    c = cd
+    frame = Polygon(LAYER, (
+        (c, -5 * c), (6.5 * c, -5 * c), (6.5 * c, 5 * c), (-6.5 * c, 5 * c),
+        (-6.5 * c, -5 * c), (-c, -5 * c), (-c, -4 * c), (-5.5 * c, -4 * c),
+        (-5.5 * c, 4 * c), (5.5 * c, 4 * c), (5.5 * c, -4 * c), (c, -4 * c),
+    ))
+    bars = [
+        Rect(LAYER, -2.4 * c, 0.0, 1.2 * c, 4.0 * c),
+        Rect(LAYER, 0.0, 0.0, 0.6 * c, 4.0 * c),
+        Rect(LAYER, 2.4 * c, 0.0, 1.2 * c, 4.0 * c),
+    ]
+    return [frame, *bars]
+
+
+def _isolated_contacts(pitch: float, cd: float) -> list:
+    """A 2 × 2 group of contacts at the drawn pitch, and a lone one beside it."""
+    group = [
+        Contact(LAYER, x, y, cd, "square")
+        for x in (-1.5 * pitch, -0.5 * pitch) for y in (-0.5 * pitch, 0.5 * pitch)
+    ]
+    return [*group, Contact(LAYER, 1.5 * pitch, 0.0, cd, "square")]
+
+
+def design_extent(params: ParameterModel) -> tuple[float, float] | None:
+    """Width and height [m] of an isolated design; ``None`` for a periodic one."""
+    pitch, cd = float(params.si("pitch")), float(params.si("cd"))
+    pattern = params["pattern"]
+    if pattern == "frame and bars":
+        return 13.0 * cd, 10.0 * cd
+    if pattern == "isolated contacts":
+        return 3.0 * pitch + cd, pitch + cd
+    return None
+
+
+def field_fit(params: ParameterModel) -> str | None:
+    """Why an isolated design does not fit the field, or ``None`` if it does.
+
+    An isolated design is only isolated with empty field around it: it may
+    take up :data:`_FILL` of the field's width and height, and beyond that the
+    correction pages refuse to run — and say which grid to set — rather than
+    correct a design that is imaging its own wrapped copy. Print itself never
+    refuses; it draws whatever fits, so the Mask tab always shows something.
+    """
+    extent = design_extent(params)
+    if extent is None:
+        return None
+    w, h = extent
+    grid = params.grid()
+    field = grid.n_pixels * grid.pixel_size
+    need = max(w, h) / _FILL
+    if need <= field:
+        return None
+    # The nearest setting of the dock's own steps that would do — 8 nm pixels
+    # first, since that keeps a 100 nm feature a dozen pixels wide.
+    n = int(math.ceil(need / 8e-9 / 32.0)) * 32
+    if n <= 256:
+        what = f"Grid {n} and Pixel size 8 nm ({n * 8} nm field)"
+    else:
+        px = math.ceil(need / 256 / 0.5e-9) * 0.5
+        what = f"Grid 256 and Pixel size {px:g} nm ({256 * px:g} nm field)"
+    return (
+        f"'{params['pattern']}' is {w * 1e9:.0f} × {h * 1e9:.0f} nm at CD "
+        f"{params['cd']:g} nm and needs empty field around it, but the field is "
+        f"{field * 1e9:.0f} nm. Set {what}, or lower the CD."
+    )
+
+
 def app_layout(params: ParameterModel) -> Layout:
     """The drawn pattern as vector geometry, on layer ``"main"``.
 
@@ -91,7 +179,10 @@ def app_layout(params: ParameterModel) -> Layout:
     dense array with every line broken by a gap of one drawn CD, a quarter
     of the way up the field — the tip-to-tip test, and the geometry
     proximity correction exists for. The gap sits off the centre row so
-    the row the CD is read on still crosses the lines.
+    the row the CD is read on still crosses the lines. The two isolated
+    designs (:data:`ISOLATED`) are drawn to their own scale, centred, and
+    simply clipped by a field too small for them; :func:`field_fit` is
+    what says so.
     """
     grid = params.grid()
     x0, y0, x1, y1 = field_box(grid)
@@ -132,6 +223,10 @@ def app_layout(params: ParameterModel) -> Layout:
                         LAYER, origin + (i + 0.5) * pitch, origin + (j + 0.5) * pitch,
                         cd, "square",
                     ))
+    elif pattern == "frame and bars":
+        shapes = _frame_and_bars(cd)
+    elif pattern == "isolated contacts":
+        shapes = _isolated_contacts(pitch, cd)
     else:
         raise ValueError(f"unknown pattern '{pattern}'")
     # Only what the field sees. A periodic builder overruns the field by a
@@ -189,14 +284,19 @@ class AppPrintModel(PrintModel):
 
 
 def opc_availability(params: ParameterModel) -> str | None:
-    """Why the correction cannot run at these settings, or ``None`` if it can."""
+    """Why the correction cannot run at these settings, or ``None`` if it can.
+
+    Shared by the OPC page and, through :func:`~litho_sim.app.ilt.
+    ilt_availability`, by the ILT tab: neither correction is offered on a
+    design that is imaging its own wrapped copy.
+    """
     if params["mask_model"] == "fdtd":
         return (
             "OPC images through the thin or multilayer mask model. The FDTD "
             "near-field library is solved for the drawn line geometry and would "
             "not see a corrected edge — set Mask model to thin."
         )
-    return None
+    return field_fit(params)
 
 
 def print_model(params: ParameterModel, cache: dict | None = None) -> AppPrintModel:
@@ -340,7 +440,8 @@ def estimate_opc_cost_ms(params: ParameterModel, image_ms: float) -> float:
 
 
 __all__ = [
-    "LAYER", "AppPrintModel", "app_layout", "compute_opc", "correction_window",
-    "dose_to_size", "estimate_opc_cost_ms", "field_box", "mask_from_layout",
-    "opc_availability", "opc_summary", "print_model",
+    "ISOLATED", "LAYER", "AppPrintModel", "app_layout", "compute_opc",
+    "correction_window", "design_extent", "dose_to_size", "estimate_opc_cost_ms",
+    "field_box", "field_fit", "mask_from_layout", "opc_availability",
+    "opc_summary", "print_model",
 ]

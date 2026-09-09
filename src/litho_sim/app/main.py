@@ -45,6 +45,7 @@ from litho_sim.app.compute import (
     mask_preview,
     source_preview,
 )
+from litho_sim.app.ilt_tab import ILTTab
 from litho_sim.app.opc import opc_summary
 from litho_sim.app.params import (
     SPECS_BY_KEY,
@@ -111,6 +112,7 @@ class MainWindow(QtWidgets.QMainWindow):
     request_device = QtCore.Signal(str)
     request_fem = QtCore.Signal(object)
     request_stoch = QtCore.Signal(object)
+    request_ilt = QtCore.Signal(object)   # ILTRequest
 
     def __init__(self):
         super().__init__()
@@ -167,8 +169,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack_tab = StackTab(self.model)
         self.simulate_tab = SimulateTab(self.model)
         self.sem_tab = SemTab()
+        self.ilt_tab = ILTTab(self.model)
         self.tabs.addTab(self.stack_tab, "Wafer Stack")
         self.tabs.addTab(self.simulate_tab, "Simulate")
+        self.tabs.addTab(self.ilt_tab, "ILT")
         self.tabs.addTab(self.sem_tab, "SEM")
         # The batch pages, by the names the rest of the app knows them by.
         self.pw_tab = self.simulate_tab.pw_tab
@@ -228,6 +232,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.request_stoch.connect(self.worker.run_stoch)
         self.worker.done_stoch.connect(self.stoch_tab.on_finished)
         self.worker.progress_stoch.connect(self.stoch_tab.on_progress)
+        # ILT streams its iterations rather than a percentage: the frames are
+        # the result, so progress_ilt carries whole states and the tab draws
+        # each one. Queued across the thread boundary like every other.
+        self.ilt_tab.run_requested.connect(self.request_ilt)
+        self.request_ilt.connect(self.worker.run_ilt)
+        self.worker.progress_ilt.connect(self.ilt_tab.on_frame)
+        self.worker.done_ilt.connect(self.ilt_tab.on_done)
         self.thread.start()
 
         self.simulate_tab.run_print.connect(self._request_print)
@@ -283,6 +294,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._refresh_stale()
         self.simulate_tab.refresh_costs()
+        # The ILT tab's Run button and its reason follow the dock too: a
+        # pattern that needs a bigger field says so there before a click.
+        self.ilt_tab.refresh_availability()
 
     def _draw_mask(self) -> None:
         """The mask as it will go on the reticle: drawn, or corrected.

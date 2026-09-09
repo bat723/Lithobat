@@ -62,7 +62,9 @@ and rule-based scattering bars.
 **Front ends.** A command line for every feature above, and a native Qt
 desktop app organised one tab per process step.
 
-Out of scope: inverse lithography (pixel-based mask optimisation).
+**Inverse lithography.** The mask as a free pixel field, solved by gradient
+descent through the adjoint of the imaging: curvilinear masks with assist
+features nobody placed, and the solve watched as it forms them.
 
 ## Install
 
@@ -149,7 +151,11 @@ ran the way a fab would. Nothing physical computes while a control moves;
 results land on the step tabs with staleness banners. Tick *Correct the
 mask* on the Mask tab and Print images the OPC-corrected mask, drawn there
 over the design; the Simulate tab's OPC page sizes the dose to the dense
-array first and shows how the correction was judged. File ▸ Load device
+array first and shows how the correction was judged. The ILT tab solves
+the mask as a free field instead and animates the solve, with a curvature
+limit that keeps the outline a curve a mask writer could cut; the *frame and
+bars* and *isolated contacts* patterns are the isolated designs it is meant
+for, and want a field of about twenty CDs (Grid 256 at 8 nm). File ▸ Load device
 builds the GAA or nFET preset off the GUI thread and drops it in as the
 starting wafer. The two 3-D views need the `app` extra's pyvista.
 
@@ -161,7 +167,7 @@ starting wafer. The two 3-D views need the `app` extra's pyvista.
 src/litho_sim/
   core/        configs, grids, logging — everything imports downward from here
   mask/        geometry · layout · patterns          what gets printed
-  opc/         fragments · model · correct · assist  moving the mask until it prints as drawn
+  opc/         fragments · model · correct · assist · ilt   moving the mask until it prints as drawn
   expose/      pupil · illumination · source · aerial_image · hopkins · m3d/
   coat/        films — TMM, BARC, swing curves       what the light lands on
   bake/        peb · reaction — diffusion, acid/quencher chemistry
