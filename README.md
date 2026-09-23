@@ -1,4 +1,4 @@
-# LithoPy
+# LithoBat
 
 **A photolithography engine that prints real devices.**
 
